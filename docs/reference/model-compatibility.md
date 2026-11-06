@@ -85,6 +85,9 @@ prompts with its own tokenizer.
   (`swa_bounded_replay` off). The sampler names the attention projections
   `wq_a`, `wkv`, `wq_b`, and `wo_b`. tinker-cookbook renders it as
   `deepseekv4_1`, and `deepseekv4_1_disable_thinking` with thinking off.
+- **H200 SFT throughput files:** the GLM-5.3-Flash-BF16 standard full file
+  needs server changes that are not yet in a released image. See
+  [H200 SFT throughput files](../../model-catalog/README.md#h200-sft-throughput-files).
 - **Qwen3.6-35B-A3B:** LoRA training and checkpoint save/load require the
   `arctic` model provider, and LoRA is limited to `q_proj`, `k_proj`,
   `v_proj`, and `o_proj`. Routed-expert LoRA is not yet supported.

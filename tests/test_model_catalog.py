@@ -544,6 +544,54 @@ def test_glm53_catalog_file_serves_on_eight_gpus_with_the_fp8_mla_cache():
     assert config["max_seq_len"] == 720896
 
 
+# ─── The H200 SFT throughput files ───────────────────────────────────────────
+
+# The catalog files that are measured H200 SFT throughput finals.
+H200_SFT_FILES = {
+    ("zai-org/GLM-5.3-Flash-BF16", "standard/h200-training-full"),
+}
+# DeepSpeed ZeRO fields that stock DeepSpeed does not read. DeepSpeed jaelee/zero-memory-upstream reads
+# optimizer_state_swap; no DeepSpeed these files run on reads the other two.
+_DEEPSPEED_FORK_FIELDS = ("optimizer_state_swap", "reduce_to_owners", "record_reduction_input")
+
+
+def _gdrcopy(body: dict) -> bool:
+    return bool((_config(body).get("nccl") or {}).get("gdrcopy_enable"))
+
+
+@pytest.mark.parametrize(("model_id", "key"), sorted(H200_SFT_FILES))
+def test_h200_sft_files_carry_only_job_fields(model_id, key):
+    _, info = _models()[model_id]
+    body = _body(model_id, key)
+    config = _config(body)
+
+    assert body["hardware"] == "H200"
+    # The client sends prime_rl; the catalog names the provider arctic, or leaves it to the server's default.
+    assert config.get("model_provider") != "prime_rl"
+    # Diagnostics and host paths stay out of the catalog files.
+    assert "step_peak_memory_log" not in config
+    assert not {"EP_JIT_CACHE_DIR", "CUDA_HOME", "DS_SKIP_CUDA_CHECK"} & set(config.get("worker_env") or {})
+    # The catalog's own live smoke test has not run on these files.
+    assert info["last_validated"][key] is None
+
+
+def test_catalog_files_do_not_enable_gdrcopy():
+    # <hw>-<kind>-<mode> has no slot for a host-driver variant, so no catalog file enables GDRCopy.
+    assert not any(_gdrcopy(_body(model_id, key)) for model_id, files in EXPECTED_FILES.items() for key in files)
+    # No DeepSpeed these files run on reads reduce_to_owners or record_reduction_input.
+    for model_id, files in EXPECTED_FILES.items():
+        for key in files:
+            zero = (_config(_body(model_id, key)).get("ds_config") or {}).get("zero_optimization") or {}
+            assert not {"reduce_to_owners", "record_reduction_input"} & set(zero), (model_id, key)
+
+
+def test_glm53_flash_lora_files_leave_out_kv_b_proj():
+    # MLA serving absorbs kv_b_proj, so a sampler cannot load an adapter that trains it.
+    for key in EXPECTED_FILES["zai-org/GLM-5.3-Flash"]:
+        if key.endswith("-lora"):
+            assert "kv_b_proj" not in _config(_body("zai-org/GLM-5.3-Flash", key))["peft_config"]["target_modules"]
+
+
 def _yaml_models(path: Path) -> dict[str, dict]:
     """Parse the fixed layout of docs/_data/models.yaml."""
     models: dict[str, dict] = {}

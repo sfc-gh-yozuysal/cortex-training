@@ -69,6 +69,35 @@ The validator checks:
 - every training and inference pair builds a valid RL job, and the default
   distillation student and teacher jobs build.
 
+## H200 SFT throughput files
+
+These training files are the measured H200 SFT throughput finals:
+
+| Model | Files |
+|---|---|
+| `zai-org/GLM-5.3-Flash-BF16` | `standard/h200-training-full` (128 GPUs) |
+
+They need server changes that are not yet in a released image:
+
+- Arctic-Platform `jaelee/model-opt` (`f2100ac`)
+- dss-platform `jaelee/model-opt-clean` (`e547386`)
+- DeepSpeed `jaelee/zero-memory-upstream` (`31f47f19`), installed as DeepSpeed
+
+An image without them drops or rejects fields such as
+`model_options.moe.ultraep_spares`. Every
+`last_validated` entry for these files is `null`: the live smoke test below has
+not run on them.
+
+Each file is its measured job body with only these changes: `hardware` added,
+`step_peak_memory_log` (a diagnostic) removed, and `model_provider` written as
+`arctic` (the client sends `prime_rl`). The full files were measured on an
+earlier revision of the DeepSpeed branch; their `zero_optimization` fields are
+the ones the branch reads.
+
+The `<hw>-<kind>-<mode>` file name has no slot for a host-driver variant, so
+no file uses GDRCopy (the `gdrdrv` kernel module on every host and the DeepEP
+V2.5 venv).
+
 ## Smoke testing
 
 Print the smoke-test plan for a catalog file without submitting it: a JSON
