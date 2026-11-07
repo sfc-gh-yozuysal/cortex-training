@@ -47,8 +47,7 @@
         },
         "ds_config": {
           "zero_optimization": {
-            "stage": 2,
-            "overlap_comm": true
+            "stage": 2
           },
           "bf16": {
             "enabled": true

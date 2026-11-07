@@ -10,7 +10,7 @@
         "n_gpus": 2,
         "sp_size": 1,
         "max_seq_len": 65536,
-        "train_batch_size": 2,
+        "train_batch_size": 8,
         "gradient_clipping": 1.0,
         "model_provider": "huggingface",
         "attn_implementation": "flash_attention_3",
@@ -28,7 +28,7 @@
         },
         "ds_config": {
           "zero_optimization": {
-            "stage": 2
+            "stage": 1
           },
           "bf16": {
             "enabled": true

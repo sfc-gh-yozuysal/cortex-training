@@ -917,10 +917,10 @@ def test_dare_builds_a_runnable_mesh_or_stops_for_every_catalog_training_file(mo
 
 
 def test_dare_keeps_a_fitting_mesh_and_rejects_one_that_needs_more_gpus():
-    # Qwen3-30B-A3B's 4-GPU EP4 mesh still divides 8 GPUs, and its catalog
-    # DeepSpeed batch of 4 is dropped for the server to derive at 8.
+    # Qwen3-30B-A3B's EP2 mesh divides 8 GPUs, and the server derives the
+    # DeepSpeed batch at 8.
     training = _sub_job(_job_body("recipes.sft_quickstart.dare.train", model="Qwen/Qwen3-30B-A3B"), "training")["training_config"]
-    assert (training["n_gpus"], training["ep_size"]) == (8, 4)
+    assert (training["n_gpus"], training["ep_size"]) == (8, 2)
     assert not {"train_batch_size", "train_micro_batch_size_per_gpu", "gradient_accumulation_steps"} & set(training["ds_config"])
     assert _server_deepspeed_batch(training) == (8, 1, 1, 8)
 

@@ -71,32 +71,54 @@ The validator checks:
 
 ## H200 SFT throughput files
 
-These training files are the measured H200 SFT throughput finals:
+These training files are measured H200 SFT throughput finals: for each file,
+the job with the most tokens per GPU found on stock DeepSpeed, without
+GDRCopy. Full-weight files keep their tier's `max_seq_len`. LoRA files train at
+262,144 tokens, or at the model's own maximum when its context is shorter:
+Qwen3's 40,960 and Gemma 3's 131,072.
 
 | Model | Files |
 |---|---|
+| `Qwen/Qwen3-0.6B` | `standard/h200-training-full` (1 GPU), `standard/h200-training-lora` (1 GPU), `long/h200-training-lora` |
+| `Qwen/Qwen3-1.7B` | `standard/h200-training-full`, `long/h200-training-lora` |
+| `Qwen/Qwen3-4B-Instruct-2507` | `standard/h200-training-full` (1 GPU), `long/h200-training-lora` |
+| `Qwen/Qwen3-8B` | `standard/h200-training-full` (4 GPUs), `standard/h200-training-lora` (4 GPUs), `long/h200-training-lora` |
+| `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B`, `Qwen/Qwen3.8-27B` | `standard/h200-training-full`, `long/h200-training-lora` |
+| `Qwen/Qwen3.5-9B` | `standard/h200-training-full` (2 GPUs), `long/h200-training-lora` |
+| `Qwen/Qwen3-30B-A3B` | `standard/h200-training-full`, `standard/h200-training-lora` |
+| `Qwen/Qwen3.6-35B-A3B` | `standard/h200-training-full`, `long/h200-training-lora` |
+| `google/gemma-3-4b-it`, `google/medgemma-4b-it`, `google/medgemma-1.5-4b-it` | `standard/h200-training-full` (1 GPU), `long/h200-training-lora` |
+| `google/gemma-4-31B-it` | `standard/h200-training-full`, `long/h200-training-full` (16 GPUs), `long/h200-training-lora` |
+| `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16`, `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` | `standard/h200-training-full`, `long/h200-training-lora` |
 | `zai-org/GLM-5.3-Flash-BF16` | `standard/h200-training-full` (128 GPUs) |
+
+The other files in the table use 8 GPUs. The MedGemma files are Gemma 3 4B's
+bodies under their own model ID (same architecture; not measured on the
+MedGemma checkpoints).
+
+The MoE LoRA files train routed-expert LoRA through `target_parameters`, with
+one exception: the Qwen3.6-35B-A3B long LoRA file keeps the attention-only
+adapter its long LoRA sampler serves. The long LoRA files new to the dense
+Qwen3 models, Qwen3.5-9B, the Gemma and MedGemma models and the Nemotron
+models, and Qwen3-30B-A3B's standard LoRA file, have no LoRA sampler of their
+context, so no RL job composes them.
 
 They need server changes that are not yet in a released image:
 
-- Arctic-Platform `jaelee/model-opt` (`f2100ac`)
-- dss-platform `jaelee/model-opt-clean` (`e547386`)
-- DeepSpeed `jaelee/zero-memory-upstream` (`31f47f19`), installed as DeepSpeed
+- Arctic-Platform `jaelee/model-opt` (`e51eb19`)
+- dss-platform `jaelee/model-opt-clean` (`bb59007`)
 
-An image without them drops or rejects fields such as
-`model_options.moe.ultraep_spares`. Every
-`last_validated` entry for these files is `null`: the live smoke test below has
-not run on them.
+DeepSpeed is the stock release; the files set no DeepSpeed fork field. An
+image without these branches drops or rejects fields such as `numa_bind`,
+`checkpoint_keep_attention`, `fused_qk_norm_rope`, `ac_config.core_replay`
+and the `prime_rl` loader options. The
+Qwen3.5 files were measured with `flash-qla` installed, and the Nemotron long
+LoRA files need a CUDA build of `mamba-ssm`. Every `last_validated` entry for
+these files is `null`: the live smoke test below has not run on them.
 
 Each file is its measured job body with only these changes: `hardware` added,
 `step_peak_memory_log` (a diagnostic) removed, and `model_provider` written as
-`arctic` (the client sends `prime_rl`). The full files were measured on an
-earlier revision of the DeepSpeed branch; their `zero_optimization` fields are
-the ones the branch reads.
-
-The `<hw>-<kind>-<mode>` file name has no slot for a host-driver variant, so
-no file uses GDRCopy (the `gdrdrv` kernel module on every host and the DeepEP
-V2.5 venv).
+`arctic` (the client sends `prime_rl`).
 
 ## Smoke testing
 
