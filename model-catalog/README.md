@@ -73,9 +73,13 @@ The validator checks:
 
 These training files are measured H200 SFT throughput finals: for each file,
 the job with the most tokens per GPU found on stock DeepSpeed, without
-GDRCopy. Full-weight files keep their tier's `max_seq_len`. LoRA files train at
-262,144 tokens, or at the model's own maximum when its context is shorter:
-Qwen3's 40,960 and Gemma 3's 131,072.
+GDRCopy. GLM-5.3-Flash-BF16's full file stays the stock one: on DeepSpeed
+`jaelee/zero-memory-upstream` (`31f47f19`, on DeepSpeed 0.19.10), whose ZeRO-1/2
+`optimizer_state_swap` keeps part of the FP32 optimizer state in host memory
+and streams it through the step, it trained fewer tokens per GPU. Full-weight
+files keep their tier's `max_seq_len`. LoRA files train at 262,144 tokens, or
+at the model's own maximum when its context is shorter: Qwen3's 40,960 and
+Gemma 3's 131,072.
 
 | Model | Files |
 |---|---|

@@ -670,6 +670,11 @@ H200_SFT_COPIES = {
 # DeepSpeed ZeRO fields that stock DeepSpeed does not read. DeepSpeed jaelee/zero-memory-upstream reads
 # optimizer_state_swap; no DeepSpeed these files run on reads the other two.
 _DEEPSPEED_FORK_FIELDS = ("optimizer_state_swap", "reduce_to_owners", "record_reduction_input")
+# The files that run on DeepSpeed jaelee/zero-memory-upstream (its optimizer_state_swap); every other
+# file runs on stock DeepSpeed.
+H200_SFT_DEEPSPEED_FORK: set[tuple[str, str]] = set()
+# The files that need GDRCopy (gdrdrv on the hosts; NCCL 2.32.3 and DeepEP V2.5 in the image).
+H200_SFT_GDRCOPY: set[tuple[str, str]] = set()
 
 
 def _gdrcopy(body: dict) -> bool:
@@ -700,12 +705,17 @@ def test_medgemma_h200_sft_files_are_gemma3_files(model_id, key):
     assert _body(model_id, key) == expected
 
 
-def test_h200_sft_files_run_on_stock_deepspeed_without_gdrcopy():
+def test_h200_sft_files_set_fork_fields_and_gdrcopy_only_where_listed():
+    assert H200_SFT_GDRCOPY <= H200_SFT_DEEPSPEED_FORK <= H200_SFT_FILES
     for model_id, files in EXPECTED_FILES.items():
         for key in files:
             body = _body(model_id, key)
-            assert not _gdrcopy(body), (model_id, key)
+            assert _gdrcopy(body) == ((model_id, key) in H200_SFT_GDRCOPY), (model_id, key)
             zero = (_config(body).get("ds_config") or {}).get("zero_optimization") or {}
+            if (model_id, key) in H200_SFT_DEEPSPEED_FORK:
+                assert "optimizer_state_swap" in zero, (model_id, key)
+                assert not {"reduce_to_owners", "record_reduction_input"} & set(zero), (model_id, key)
+                continue
             assert not set(_DEEPSPEED_FORK_FIELDS) & set(zero), (model_id, key)
             # Stock DeepSpeed's ZeRO-1/2 overlap_comm reduces a parameter larger than its bucket from param.grad
             # without recording the reduction stream, which can corrupt that gradient.
