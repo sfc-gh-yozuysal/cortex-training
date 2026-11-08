@@ -7,8 +7,8 @@
       "dtype": "bfloat16",
       "seed": 42,
       "training_config": {
-        "n_gpus": 16,
-        "sp_size": 16,
+        "n_gpus": 8,
+        "sp_size": 8,
         "max_seq_len": 262144,
         "train_batch_size": 1,
         "gradient_clipping": 1.0,
@@ -33,6 +33,13 @@
           "bf16": {
             "enabled": true
           }
+        },
+        "shard_dense": true,
+        "checkpoint_keep_attention": [
+          "arctic_hd512::forward"
+        ],
+        "model_options": {
+          "liger": true
         }
       }
     }

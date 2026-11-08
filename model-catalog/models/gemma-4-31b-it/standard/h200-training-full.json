@@ -28,11 +28,7 @@
         },
         "ds_config": {
           "zero_optimization": {
-            "stage": 2,
-            "offload_optimizer": {
-              "device": "cpu",
-              "pin_memory": false
-            }
+            "stage": 2
           },
           "bf16": {
             "enabled": true
@@ -41,11 +37,10 @@
         "model_options": {
           "liger": true
         },
-        "numa_bind": true,
-        "worker_threads": 24,
         "checkpoint_keep_attention": [
           "arctic_hd512::forward"
-        ]
+        ],
+        "shard_dense": true
       }
     }
   ]

@@ -222,7 +222,6 @@ def test_validation_dates_match_completed_live_smokes():
         ("Qwen/Qwen3.5-9B", "long/h200-inference-full"): "2026-10-14",
         ("Qwen/Qwen3.5-9B", "long/h200-training-full"): "2026-10-14",
         ("Qwen/Qwen3.6-35B-A3B", "standard/h200-training-lora"): "2026-11-05",
-        ("Qwen/Qwen3.8-27B", "long/h200-training-full"): "2026-09-02",
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "long/h200-training-full"): "2026-10-23",
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "long/h200-training-lora"): "2026-10-26",
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "standard/h200-training-full"): "2026-10-23",
@@ -584,6 +583,7 @@ H200_SFT_FILES = {
     ("Qwen/Qwen3.5-9B", "standard/h200-training-full"),
     ("Qwen/Qwen3.6-35B-A3B", "long/h200-training-lora"),
     ("Qwen/Qwen3.6-35B-A3B", "standard/h200-training-full"),
+    ("Qwen/Qwen3.8-27B", "long/h200-training-full"),
     ("Qwen/Qwen3.8-27B", "long/h200-training-lora"),
     ("Qwen/Qwen3.8-27B", "standard/h200-training-full"),
     ("google/gemma-3-4b-it", "long/h200-training-lora"),
@@ -1131,16 +1131,17 @@ def test_qwen38_sft_uses_chunked_logprob_loss(job, context):
     request = build_catalog_request(CATALOG_DIR, "Qwen/Qwen3.8-27B", job, context=context)
     training = request["sub_job_configs"][0]["training_config"]
 
-    # A 256K sequence is split across eight GPUs; 256K full fine-tuning needs
-    # four of those groups, and a larger sequence-parallel degree does not divide
-    # the attention heads. The standard full file, an H200 SFT throughput final,
-    # splits each 64K sequence across two of one node's GPUs.
+    # The full files are H200 SFT throughput finals on one node with the trainable weights sharded across its GPUs
+    # (shard_dense): the long one splits each 256K sequence across all eight; the standard one trains a 64K
+    # sequence per GPU, its checkpointed activations offloaded to host memory.
     if context == "long" and job == "training-full":
-        assert (training["n_gpus"], training["sp_size"], training["train_batch_size"]) == (32, 8, 4)
+        assert (training["n_gpus"], training["sp_size"], training["train_batch_size"]) == (8, 8, 1)
     elif job == "training-full":
-        assert (training["n_gpus"], training["sp_size"], training["train_batch_size"]) == (8, 2, 4)
+        assert (training["n_gpus"], training.get("sp_size", 1), training["train_batch_size"]) == (8, 1, 8)
     else:
         assert (training["n_gpus"], training["sp_size"], training["train_batch_size"]) == (8, 8, 1)
+    if job == "training-full":
+        assert training["shard_dense"] is True
     assert training["fused_lm_head_token_chunk_size"] == 8192
 
     spec = build_forward_backward_probe_spec(

@@ -83,12 +83,13 @@ Qwen3's 40,960 and Gemma 3's 131,072.
 | `Qwen/Qwen3-1.7B` | `standard/h200-training-full`, `long/h200-training-lora` |
 | `Qwen/Qwen3-4B-Instruct-2507` | `standard/h200-training-full` (1 GPU), `long/h200-training-lora` |
 | `Qwen/Qwen3-8B` | `standard/h200-training-full` (4 GPUs), `standard/h200-training-lora` (4 GPUs), `long/h200-training-lora` |
-| `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B`, `Qwen/Qwen3.8-27B` | `standard/h200-training-full`, `long/h200-training-lora` |
+| `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B` | `standard/h200-training-full`, `long/h200-training-lora` |
+| `Qwen/Qwen3.8-27B` | `standard/h200-training-full`, `long/h200-training-full`, `long/h200-training-lora` |
 | `Qwen/Qwen3.5-9B` | `standard/h200-training-full` (2 GPUs), `long/h200-training-lora` |
 | `Qwen/Qwen3-30B-A3B` | `standard/h200-training-full`, `standard/h200-training-lora` |
 | `Qwen/Qwen3.6-35B-A3B` | `standard/h200-training-full`, `long/h200-training-lora` |
 | `google/gemma-3-4b-it`, `google/medgemma-4b-it`, `google/medgemma-1.5-4b-it` | `standard/h200-training-full` (1 GPU), `long/h200-training-lora` |
-| `google/gemma-4-31B-it` | `standard/h200-training-full`, `long/h200-training-full` (16 GPUs), `long/h200-training-lora` |
+| `google/gemma-4-31B-it` | `standard/h200-training-full`, `long/h200-training-full`, `long/h200-training-lora` |
 | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16`, `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` | `standard/h200-training-full`, `long/h200-training-lora` |
 | `zai-org/GLM-5.3-Flash-BF16` | `standard/h200-training-full` (128 GPUs) |
 
@@ -103,14 +104,23 @@ Qwen3 models, Qwen3.5-9B, the Gemma and MedGemma models and the Nemotron
 models, and Qwen3-30B-A3B's standard LoRA file, have no LoRA sampler of their
 context, so no RL job composes them.
 
+The Gemma 4 31B and Qwen3.8-27B full files train on one node with
+`shard_dense`: each trainable weight is sharded across the node's eight GPUs
+and gathered when its layer runs, so a GPU holds an eighth of the weights
+instead of all of them (ZeRO-2 shards only the optimizer state and
+gradients). The room goes to keeping the optimizer on the GPU (Gemma 4) and to
+a 64K sequence per GPU (Qwen3.8-27B's standard file, its checkpointed
+activations offloaded to host memory), and the long full files train 256K
+rows on eight GPUs: Gemma 4's used 16 before and Qwen3.8-27B's 32.
+
 They need server changes that are not yet in a released image:
 
-- Arctic-Platform `jaelee/model-opt` (`e51eb19`)
-- dss-platform `jaelee/model-opt-clean` (`bb59007`)
+- Arctic-Platform `jaelee/model-opt` (`b6e130e`)
+- dss-platform `jaelee/model-opt-clean` (`08e884c`)
 
 DeepSpeed is the stock release; the files set no DeepSpeed fork field. An
 image without these branches drops or rejects fields such as `numa_bind`,
-`checkpoint_keep_attention`, `fused_qk_norm_rope`, `ac_config.core_replay`
+`shard_dense`, `checkpoint_keep_attention`, `fused_qk_norm_rope`, `ac_config.core_replay`
 and the `prime_rl` loader options. The
 Qwen3.5 files were measured with `flash-qla` installed, and the Nemotron long
 LoRA files need a CUDA build of `mamba-ssm`. Every `last_validated` entry for

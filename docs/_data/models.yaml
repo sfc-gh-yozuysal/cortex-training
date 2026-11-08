@@ -129,7 +129,7 @@ models:
       - conversational-sft
       - inference-endpoint
       - math-grpo
-    last_validated: 2026-09-02
+    last_validated: null
   - id: thinkingmachines/Inkling-2-Small-MXFP8
     training: true
     inference: true
