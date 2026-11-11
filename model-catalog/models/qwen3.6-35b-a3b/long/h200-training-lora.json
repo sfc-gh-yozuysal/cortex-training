@@ -41,7 +41,7 @@
         },
         "ds_config": {
           "zero_optimization": {
-            "stage": 1
+            "stage": 2
           },
           "bf16": {
             "enabled": true

@@ -730,6 +730,11 @@ def test_h200_sft_files_set_fork_fields_and_gdrcopy_only_where_listed():
             # Stock DeepSpeed's ZeRO-1/2 overlap_comm reduces a parameter larger than its bucket from param.grad
             # without recording the reduction stream, which can corrupt that gradient.
             assert not zero.get("overlap_comm"), (model_id, key)
+            # ZeRO-1 with BF16 and the trainer's FP32 gradient accumulation runs DeepSpeed's BF16_Optimizer, whose
+            # gradient norm on stock DeepSpeed fails on a sequence-parallel rank that holds no counted gradient
+            # ("stack expects a non-empty TensorList").
+            if zero.get("stage") == 1:
+                assert (_config(body).get("sp_size") or 1) == 1, (model_id, key)
 
 
 def test_glm53_flash_lora_files_leave_out_kv_b_proj():
