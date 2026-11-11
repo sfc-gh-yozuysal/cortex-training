@@ -682,7 +682,9 @@ H200_SFT_COPIES = {
 _DEEPSPEED_FORK_FIELDS = ("optimizer_state_swap", "reduce_to_owners", "record_reduction_input")
 # The files that run on DeepSpeed jaelee/zero-memory-upstream (its optimizer_state_swap); every other
 # file runs on stock DeepSpeed.
-H200_SFT_DEEPSPEED_FORK: set[tuple[str, str]] = set()
+H200_SFT_DEEPSPEED_FORK = {
+    ("zai-org/GLM-5.3-Flash-BF16", "standard/h200-training-full"),
+}
 # The files that need GDRCopy (gdrdrv on the hosts; NCCL 2.32.3 and DeepEP V2.5 in the image).
 H200_SFT_GDRCOPY: set[tuple[str, str]] = set()
 

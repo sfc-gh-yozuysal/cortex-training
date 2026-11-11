@@ -7,10 +7,10 @@
       "dtype": "bfloat16",
       "seed": 42,
       "training_config": {
-        "n_gpus": 128,
+        "n_gpus": 32,
         "max_seq_len": 65536,
-        "train_batch_size": 32,
-        "sp_size": 4,
+        "train_batch_size": 8,
+        "sp_size": 8,
         "ep_size": 32,
         "gradient_clipping": 1.0,
         "model_provider": "arctic",
@@ -30,9 +30,9 @@
           "moe": {
             "comm_token_chunk": 8192,
             "comm_backend": "uccl",
-            "comm_sms": 32,
             "ultraep_spares": 2,
-            "ultraep_ipc_symm": true
+            "ultraep_ipc_symm": true,
+            "comm_sms": 32
           }
         },
         "optimizer": {
@@ -47,7 +47,12 @@
         },
         "ds_config": {
           "zero_optimization": {
-            "stage": 2
+            "stage": 2,
+            "optimizer_state_swap": {
+              "fraction": 1.0,
+              "stream": true,
+              "group_gib": 2
+            }
           },
           "bf16": {
             "enabled": true
@@ -57,6 +62,7 @@
           "net_plugin": "ofi",
           "tuner_plugin": "ofi"
         },
+        "numa_bind": true,
         "ac_config": {
           "combine_replay": true,
           "router_replay_recompute": true
