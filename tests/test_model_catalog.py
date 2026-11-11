@@ -55,10 +55,10 @@ EXPECTED_FILES = {
         "long/h200-inference-lora",
         "long/h200-training-lora",
     ],
-    "Qwen/Qwen3-0.6B": _TRAINABLE_STANDARD + _LONG_LORA,
-    "Qwen/Qwen3-1.7B": _TRAINABLE_STANDARD + _LONG_LORA,
+    "Qwen/Qwen3-0.6B": _TRAINABLE_STANDARD + _TRAINABLE_LONG,
+    "Qwen/Qwen3-1.7B": _TRAINABLE_STANDARD + _TRAINABLE_LONG,
     "Qwen/Qwen3-4B-Instruct-2507": _FULL_STANDARD_LONG + _LONG_LORA,
-    "Qwen/Qwen3-8B": _TRAINABLE_STANDARD + _LONG_LORA,
+    "Qwen/Qwen3-8B": _TRAINABLE_STANDARD + _TRAINABLE_LONG,
     "Qwen/Qwen3.5-2B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
     "Qwen/Qwen3.5-4B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
     "Qwen/Qwen3.5-9B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
@@ -121,10 +121,10 @@ def _config(body: dict) -> dict:
 def test_checked_in_catalog_is_valid():
     assert validate_catalog() == {
         "models": 22,
-        "files": 129,
-        "training": 62,
-        "inference": 67,
-        "rl": 60,
+        "files": 135,
+        "training": 65,
+        "inference": 70,
+        "rl": 63,
         "distillation": 1,
     }
 
@@ -221,9 +221,7 @@ def test_validation_dates_match_completed_live_smokes():
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "standard/h200-training-lora"): "2026-10-26",
         ("google/gemma-4-31B-it", "long/h200-inference-full"): "2026-10-15",
         ("google/medgemma-1.5-4b-it", "long/h200-inference-full"): "2026-10-15",
-        ("google/medgemma-1.5-4b-it", "long/h200-training-full"): "2026-10-15",
         ("google/medgemma-4b-it", "long/h200-inference-full"): "2026-10-15",
-        ("google/medgemma-4b-it", "long/h200-training-full"): "2026-10-15",
         ("zai-org/GLM-5.3-Flash", "long/h200-inference-lora"): "2026-10-20",
         ("zai-org/GLM-5.3-Flash", "long/h200-training-lora"): "2026-10-20",
         ("zai-org/GLM-5.3-Flash-BF16", "long/h200-inference-full"): "2026-10-20",
@@ -627,15 +625,18 @@ def test_glm53_catalog_file_serves_on_eight_gpus_with_the_fp8_mla_cache():
 
 # The catalog files that are measured H200 SFT throughput finals.
 H200_SFT_FILES = {
+    ("Qwen/Qwen3-0.6B", "long/h200-training-full"),
     ("Qwen/Qwen3-0.6B", "long/h200-training-lora"),
     ("Qwen/Qwen3-0.6B", "standard/h200-training-full"),
     ("Qwen/Qwen3-0.6B", "standard/h200-training-lora"),
+    ("Qwen/Qwen3-1.7B", "long/h200-training-full"),
     ("Qwen/Qwen3-1.7B", "long/h200-training-lora"),
     ("Qwen/Qwen3-1.7B", "standard/h200-training-full"),
     ("Qwen/Qwen3-30B-A3B", "standard/h200-training-full"),
     ("Qwen/Qwen3-30B-A3B", "standard/h200-training-lora"),
     ("Qwen/Qwen3-4B-Instruct-2507", "long/h200-training-lora"),
     ("Qwen/Qwen3-4B-Instruct-2507", "standard/h200-training-full"),
+    ("Qwen/Qwen3-8B", "long/h200-training-full"),
     ("Qwen/Qwen3-8B", "long/h200-training-lora"),
     ("Qwen/Qwen3-8B", "standard/h200-training-full"),
     ("Qwen/Qwen3-8B", "standard/h200-training-lora"),
@@ -653,6 +654,7 @@ H200_SFT_FILES = {
     ("Qwen/Qwen3.8-27B", "long/h200-training-full"),
     ("Qwen/Qwen3.8-27B", "long/h200-training-lora"),
     ("Qwen/Qwen3.8-27B", "standard/h200-training-full"),
+    ("google/gemma-3-4b-it", "long/h200-training-full"),
     ("google/gemma-3-4b-it", "long/h200-training-lora"),
     ("google/gemma-3-4b-it", "standard/h200-training-full"),
     ("google/gemma-4-31B-it", "long/h200-training-full"),
@@ -668,6 +670,8 @@ H200_SFT_FILES = {
 }
 # Same architecture as Gemma 3 4B: Gemma 3 4B's files under their own model ID.
 H200_SFT_COPIES = {
+    ("google/medgemma-1.5-4b-it", "long/h200-training-full"): ("google/gemma-3-4b-it", "long/h200-training-full"),
+    ("google/medgemma-4b-it", "long/h200-training-full"): ("google/gemma-3-4b-it", "long/h200-training-full"),
     ("google/medgemma-1.5-4b-it", "long/h200-training-lora"): ("google/gemma-3-4b-it", "long/h200-training-lora"),
     ("google/medgemma-1.5-4b-it", "standard/h200-training-full"): ("google/gemma-3-4b-it", "standard/h200-training-full"),
     ("google/medgemma-4b-it", "long/h200-training-lora"): ("google/gemma-3-4b-it", "long/h200-training-lora"),
@@ -1096,7 +1100,8 @@ def test_files_hold_one_sub_job_of_their_kind(catalog):
     ],
 )
 def test_validation_dates_cover_exactly_the_model_files(catalog, change, match):
-    _edit(catalog / "qwen3-8b/model.json", lambda info: change(info["last_validated"]))
+    # Qwen3-30B-A3B has no long tier.
+    _edit(catalog / "qwen3-30b-a3b/model.json", lambda info: change(info["last_validated"]))
 
     _invalid(catalog, match)
 
