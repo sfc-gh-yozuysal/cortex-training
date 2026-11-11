@@ -99,10 +99,23 @@ MedGemma checkpoints).
 
 The MoE LoRA files train routed-expert LoRA through `target_parameters`, with
 one exception: the Qwen3.6-35B-A3B long LoRA file keeps the attention-only
-adapter its long LoRA sampler serves. The long LoRA files new to the dense
-Qwen3 models, Qwen3.5-9B, the Gemma and MedGemma models and the Nemotron
-models, and Qwen3-30B-A3B's standard LoRA file, have no LoRA sampler of their
-context, so no RL job composes them.
+adapter its long LoRA sampler serves.
+
+Every training file in the table has an inference file of its context and mode
+with the same `max_seq_len`, so each pair composes an RL job; MoE router replay
+needs the two windows to match. The samplers added for this follow the model's
+other inference files: a long sampler takes the long full-weight sampler's
+layout, a LoRA sampler the full-weight sampler's plus the training adapter, and
+a Qwen3 long LoRA sampler (40,960 tokens) the standard LoRA sampler's engine
+settings on one GPU. Their `last_validated` entries are `null`.
+
+Some LoRA samplers serve a narrower adapter than their trainer's: no catalog
+sampler serves expert LoRA, so the samplers of the Nemotron long LoRA files and
+of Qwen3-30B-A3B's standard LoRA file leave out the trainers'
+`target_parameters` (routed and shared experts). Gemma 4's lists the
+language-model projections its trainer selects with a regex. These pairs build
+RL jobs, but a follow-up command finds no catalog sampler that loads their
+whole checkpoints.
 
 The Gemma 4 31B and Qwen3.8-27B full files train on one node with
 `shard_dense`: each trainable weight is sharded across the node's eight GPUs

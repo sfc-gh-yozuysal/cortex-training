@@ -9,10 +9,10 @@ for a specific workload.
 
 | Model | Architecture | Training | Inference | Long-context `max_seq_len` |
 |---|---|---|---|---|
-| `Qwen/Qwen3-0.6B` | dense | standard, long | standard | 40,960 (training) |
-| `Qwen/Qwen3-1.7B` | dense | standard, long | standard | 40,960 (training) |
+| `Qwen/Qwen3-0.6B` | dense | standard, long | standard, long | 40,960 |
+| `Qwen/Qwen3-1.7B` | dense | standard, long | standard, long | 40,960 |
 | `Qwen/Qwen3-4B-Instruct-2507` | dense | standard, long | standard, long | 262,144 |
-| `Qwen/Qwen3-8B` | dense | standard, long | standard | 40,960 (training) |
+| `Qwen/Qwen3-8B` | dense | standard, long | standard, long | 40,960 |
 | `Qwen/Qwen3.5-2B` | dense | standard, long | standard, long | 262,144 |
 | `Qwen/Qwen3.5-4B` | dense | standard, long | standard, long | 262,144 |
 | `Qwen/Qwen3.5-9B` | dense | standard, long | standard, long | 262,144 |
@@ -91,6 +91,11 @@ prompts with its own tokenizer.
   [H200 SFT throughput files](../../model-catalog/README.md#h200-sft-throughput-files)
   are measured H200 throughput configurations. They need server changes that
   are not yet in a released image.
+- **RL pairs:** every training file in the
+  [H200 SFT throughput files](../../model-catalog/README.md#h200-sft-throughput-files)
+  table has an inference file of its context and mode with the same
+  `max_seq_len`. Some LoRA samplers serve a narrower adapter than their
+  trainer's (no expert LoRA); see that section.
 - **Qwen3.6-35B-A3B:** LoRA training and checkpoint save/load require the
   `arctic` model provider, and LoRA is limited to `q_proj`, `k_proj`,
   `v_proj`, and `o_proj`. Routed-expert LoRA is not yet supported.

@@ -950,12 +950,16 @@ def test_follow_up_commands_pick_an_inference_file_that_serves_the_checkpoint(mo
     args = utils.inference_job_args(body, context=context)
 
     if args == {"job_config": utils.INFERENCE_JOB_CONFIG_PLACEHOLDER}:
-        # A training mesh with no sampler of this mode has nothing to follow up with.
+        # No sampler of this mode serves the checkpoint: there is none, or every LoRA sampler of the model
+        # serves a narrower adapter than the trainer's.
         folder = REPO_ROOT / "model-catalog" / "models" / utils.model_slug(model)
-        assert not any(
-            (folder / candidate / utils.catalog_file_name(hardware, "inference", lora)).is_file()
-            for candidate in ("standard", "long")
-        ), (model, context, hardware, lora)
+        adapter = body["sub_job_configs"][0]["training_config"].get("peft_config")
+        for candidate in ("standard", "long"):
+            path = folder / candidate / utils.catalog_file_name(hardware, "inference", lora)
+            if path.is_file():
+                assert lora, (model, context, hardware, lora)
+                sampling = json.loads(path.read_text())["sub_job_configs"][0]["inference_config"]
+                assert not utils.same_adapter(sampling["peft_config"], adapter), (model, candidate, hardware)
         return
     assert set(args) == {"model", "context", "hardware", "lora"}
     assert (args["model"], args["hardware"], args["lora"]) == (model, hardware, lora)
@@ -988,8 +992,16 @@ def test_rl_follow_up_commands_serve_the_checkpoint():
             continue
         body = utils.build_job("rl", model=model, context=context, hardware=hardware, lora=lora, rollout_batch_size=8)
         args = utils.inference_job_args(body, context=context)
+        training_sub, sampling_sub = body["sub_job_configs"]
+        if lora and not utils.same_adapter(
+            sampling_sub["inference_config"]["peft_config"], training_sub["training_config"]["peft_config"]
+        ):
+            # The RL job's sampler serves a narrower adapter than the trainer's, so no catalog file serves
+            # the checkpoint (test_model_catalog's LORA_SAMPLER_TARGETS).
+            assert args == {"job_config": utils.INFERENCE_JOB_CONFIG_PLACEHOLDER}, (model, context, hardware)
+            continue
         assert args == {"model": model, "context": context, "hardware": hardware, "lora": lora}
-        _assert_serves_checkpoint(utils, body["sub_job_configs"][0], args)
+        _assert_serves_checkpoint(utils, training_sub, args)
 
 
 @pytest.mark.parametrize(

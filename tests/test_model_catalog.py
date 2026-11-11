@@ -44,8 +44,8 @@ _FULL_STANDARD_LONG = [
     "long/h200-inference-full",
     "long/h200-training-full",
 ]
-# A long LoRA training file with no long LoRA sampler: the H200 SFT throughput finals added it.
-_LONG_LORA_TRAINING = ["long/h200-training-lora"]
+# A long LoRA training file (the H200 SFT throughput finals added it) and the LoRA sampler that pairs it for RL.
+_LONG_LORA = ["long/h200-inference-lora", "long/h200-training-lora"]
 EXPECTED_FILES = {
     "thinkingmachines/Inkling-2-Small-MXFP8": [
         "standard/h200-inference-full",
@@ -55,22 +55,16 @@ EXPECTED_FILES = {
         "long/h200-inference-lora",
         "long/h200-training-lora",
     ],
-    "Qwen/Qwen3-0.6B": _TRAINABLE_STANDARD + _LONG_LORA_TRAINING,
-    "Qwen/Qwen3-1.7B": _TRAINABLE_STANDARD + _LONG_LORA_TRAINING,
-    "Qwen/Qwen3-4B-Instruct-2507": _FULL_STANDARD_LONG + _LONG_LORA_TRAINING,
-    "Qwen/Qwen3-8B": _TRAINABLE_STANDARD + _LONG_LORA_TRAINING,
+    "Qwen/Qwen3-0.6B": _TRAINABLE_STANDARD + _LONG_LORA,
+    "Qwen/Qwen3-1.7B": _TRAINABLE_STANDARD + _LONG_LORA,
+    "Qwen/Qwen3-4B-Instruct-2507": _FULL_STANDARD_LONG + _LONG_LORA,
+    "Qwen/Qwen3-8B": _TRAINABLE_STANDARD + _LONG_LORA,
     "Qwen/Qwen3.5-2B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
     "Qwen/Qwen3.5-4B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
-    "Qwen/Qwen3.5-9B": _TRAINABLE_STANDARD
-    + ["long/h200-inference-full", "long/h200-training-full"]
-    + _LONG_LORA_TRAINING,
+    "Qwen/Qwen3.5-9B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
     "Qwen/Qwen3.6-35B-A3B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
     "Qwen/Qwen3.8-27B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
-    "Qwen/Qwen3-30B-A3B": [
-        "standard/h200-inference-full",
-        "standard/h200-training-full",
-        "standard/h200-training-lora",
-    ],
+    "Qwen/Qwen3-30B-A3B": _TRAINABLE_STANDARD,
     "deepseek-ai/DeepSeek-V4.1-Flash-1017": [
         "standard/h200-inference-lora",
         "standard/h200-training-full",
@@ -80,12 +74,12 @@ EXPECTED_FILES = {
         "long/h200-training-lora",
     ],
     "openai/gpt-oss-120b": ["long/h200-inference-full"],
-    "google/gemma-3-4b-it": _FULL_STANDARD_LONG + _LONG_LORA_TRAINING,
-    "google/gemma-4-31B-it": _FULL_STANDARD_LONG + _LONG_LORA_TRAINING,
-    "google/medgemma-4b-it": _FULL_STANDARD_LONG + _LONG_LORA_TRAINING,
-    "google/medgemma-1.5-4b-it": _FULL_STANDARD_LONG + _LONG_LORA_TRAINING,
-    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": _FULL_STANDARD_LONG + _LONG_LORA_TRAINING,
-    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16": _FULL_STANDARD_LONG + _LONG_LORA_TRAINING,
+    "google/gemma-3-4b-it": _FULL_STANDARD_LONG + _LONG_LORA,
+    "google/gemma-4-31B-it": _FULL_STANDARD_LONG + _LONG_LORA,
+    "google/medgemma-4b-it": _FULL_STANDARD_LONG + _LONG_LORA,
+    "google/medgemma-1.5-4b-it": _FULL_STANDARD_LONG + _LONG_LORA,
+    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": _FULL_STANDARD_LONG + _LONG_LORA,
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16": _FULL_STANDARD_LONG + _LONG_LORA,
     "zai-org/GLM-5.3": ["standard/h200-inference-full", "long/h200-inference-full"],
     "zai-org/GLM-5.3-Flash": [
         "standard/h200-inference-full",
@@ -127,10 +121,10 @@ def _config(body: dict) -> dict:
 def test_checked_in_catalog_is_valid():
     assert validate_catalog() == {
         "models": 22,
-        "files": 117,
+        "files": 129,
         "training": 62,
-        "inference": 55,
-        "rl": 48,
+        "inference": 67,
+        "rl": 60,
         "distillation": 1,
     }
 
@@ -263,12 +257,15 @@ def test_files_keep_their_source_sequence_lengths():
         ("Qwen/Qwen3-0.6B", "standard", "inference"): 32768,
         ("Qwen/Qwen3-0.6B", "standard", "training"): 32768,
         # Qwen3's max_position_embeddings: the long LoRA files train at the model's own maximum.
+        ("Qwen/Qwen3-0.6B", "long", "inference"): 40960,
         ("Qwen/Qwen3-0.6B", "long", "training"): 40960,
         ("Qwen/Qwen3-1.7B", "standard", "inference"): 32768,
         ("Qwen/Qwen3-1.7B", "standard", "training"): 32768,
+        ("Qwen/Qwen3-1.7B", "long", "inference"): 40960,
         ("Qwen/Qwen3-1.7B", "long", "training"): 40960,
         ("Qwen/Qwen3-8B", "standard", "inference"): 32768,
         ("Qwen/Qwen3-8B", "standard", "training"): 32768,
+        ("Qwen/Qwen3-8B", "long", "inference"): 40960,
         ("Qwen/Qwen3-8B", "long", "training"): 40960,
         ("Qwen/Qwen3.5-2B", "long", "inference"): 262144,
         ("Qwen/Qwen3.5-2B", "long", "training"): 262144,
@@ -435,6 +432,20 @@ def test_qwen36_long_training_uses_sequence_parallelism():
         assert (config["n_gpus"], config["sp_size"], config["train_batch_size"]) == mesh
 
 
+_LM_PROJECTIONS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+# LoRA samplers whose target_modules differ from their training adapter's, and the modules they serve. No
+# sampler carries the trainer's target_parameters (routed and shared experts): no catalog sampler of these
+# families serves expert LoRA. Gemma 4's trainer names its language-model projections with a regex; the sampler
+# lists them, and vLLM applies LoRA to the language model only. These pairs build RL jobs, but the sampler does
+# not load the trainer's whole adapter, so inference_job_args serves the checkpoint with no catalog file.
+LORA_SAMPLER_TARGETS = {
+    ("google/gemma-4-31B-it", "long/h200-inference-lora"): _LM_PROJECTIONS,
+    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "long/h200-inference-lora"): _LM_PROJECTIONS,
+    ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "long/h200-inference-lora"): _LM_PROJECTIONS,
+    ("Qwen/Qwen3-30B-A3B", "standard/h200-inference-lora"): _LM_PROJECTIONS,
+}
+
+
 def test_lora_inference_files_match_their_training_adapter():
     for model_id, files in EXPECTED_FILES.items():
         for key in files:
@@ -443,6 +454,17 @@ def test_lora_inference_files_match_their_training_adapter():
             training_key = key.replace("inference-lora", "training-lora")
             inference = _config(_body(model_id, key))["peft_config"]
             training = _config(_body(model_id, training_key))["peft_config"]
+            if (model_id, key) in LORA_SAMPLER_TARGETS:
+                # The same rank, scale, dropout and bias; only the modules differ.
+                assert {name: value for name, value in inference.items() if name != "target_modules"} == {
+                    name: value
+                    for name, value in training.items()
+                    if name not in ("target_modules", "target_parameters")
+                }, (model_id, key)
+                assert inference["target_modules"] == LORA_SAMPLER_TARGETS[model_id, key], (model_id, key)
+                if isinstance(training["target_modules"], list):
+                    assert set(inference["target_modules"]) <= set(training["target_modules"]), (model_id, key)
+                continue
             if model_id == "deepseek-ai/DeepSeek-V4.1-Flash-1017":
                 # vLLM names these attention projections; the trainer uses the checkpoint names.
                 assert {name: value for name, value in inference.items() if name != "target_modules"} == {
@@ -470,16 +492,17 @@ def test_lora_inference_files_match_their_training_adapter():
 def test_qwen_inference_uses_single_gpu_tensor_parallelism(model_id):
     for key in EXPECTED_FILES[model_id]:
         # Qwen3.5-9B's 262,144-token long tier serves on eight GPUs instead.
-        if "inference" in key and (model_id, key) != ("Qwen/Qwen3.5-9B", "long/h200-inference-full"):
+        if "inference" in key and not (model_id == "Qwen/Qwen3.5-9B" and key.startswith("long/")):
             assert _config(_body(model_id, key))["vllm_config"]["tensor_parallel_size"] == 1
 
 
 def test_qwen35_9b_long_tier_uses_eight_gpus():
     training = _config(_body("Qwen/Qwen3.5-9B", "long/h200-training-full"))
-    inference = _config(_body("Qwen/Qwen3.5-9B", "long/h200-inference-full"))
 
     assert (training["n_gpus"], training["sp_size"], training["train_batch_size"]) == (8, 8, 1)
-    assert (inference["n_gpus"], inference["vllm_config"]["tensor_parallel_size"]) == (8, 8)
+    for mode in ("full", "lora"):
+        inference = _config(_body("Qwen/Qwen3.5-9B", f"long/h200-inference-{mode}"))
+        assert (inference["n_gpus"], inference["vllm_config"]["tensor_parallel_size"]) == (8, 8)
 
 
 def test_large_quantized_inference_uses_single_node_tp8_with_fp8_kv_cache():
@@ -544,6 +567,46 @@ def test_deepseek_v41_sampler_captures_every_layer_for_router_replay():
         # Bounded replay runs the later layers on each request's trailing window only,
         # so those layers never route most prompt tokens.
         assert inference["vllm_config"]["extra_engine_kwargs"]["swa_bounded_replay"] is False
+
+
+def test_every_h200_sft_training_file_has_an_inference_partner_for_rl():
+    # Each H200 SFT throughput training file has an inference file of its context and mode with the same
+    # max_seq_len, so validate_catalog builds its RL job and MoE router replay covers the whole training window.
+    for model_id, key in H200_SFT_FILES | set(H200_SFT_COPIES):
+        partner = key.replace("-training-", "-inference-")
+        assert partner in EXPECTED_FILES[model_id], (model_id, key)
+        assert _config(_body(model_id, partner))["max_seq_len"] == _config(_body(model_id, key))["max_seq_len"]
+
+
+def test_rl_partner_samplers_start_unvalidated():
+    added = {
+        ("Qwen/Qwen3-30B-A3B", "standard/h200-inference-lora"),
+    } | {
+        (model_id, "long/h200-inference-lora")
+        for model_id in (
+            "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+            "google/gemma-3-4b-it",
+            "google/gemma-4-31B-it",
+            "google/medgemma-1.5-4b-it",
+            "google/medgemma-4b-it",
+            "Qwen/Qwen3-0.6B",
+            "Qwen/Qwen3-1.7B",
+            "Qwen/Qwen3-4B-Instruct-2507",
+            "Qwen/Qwen3-8B",
+            "Qwen/Qwen3.5-9B",
+        )
+    }
+    for model_id, key in added:
+        assert _models()[model_id][1]["last_validated"][key] is None, (model_id, key)
+
+
+def test_moe_training_files_keep_the_rl_router_replay_keys():
+    # Router replay recomputes the replayed routes inside activation checkpointing.
+    for model_id, key in [
+        ("zai-org/GLM-5.3-Flash-BF16", "standard/h200-training-full"),
+    ]:
+        assert _config(_body(model_id, key))["ac_config"]["router_replay_recompute"] is True, (model_id, key)
 
 
 def test_glm53_catalog_file_serves_on_eight_gpus_with_the_fp8_mla_cache():
@@ -1084,9 +1147,9 @@ def test_smoke_request_is_the_catalog_file():
 
 
 def test_smoke_request_names_the_files_that_exist():
-    # Qwen3.5-9B's long tier has no LoRA files, so a long LoRA request names the files it has.
-    with pytest.raises(ValueError, match="has no long/h200-inference-lora.json; its catalog files are: long/"):
-        build_catalog_request(CATALOG_DIR, "Qwen/Qwen3.5-9B", "inference-lora", context="long")
+    # Qwen3-30B-A3B has no long tier, so a long LoRA training request names the files it has.
+    with pytest.raises(ValueError, match="has no long/h200-training-lora.json; its catalog files are: standard/"):
+        build_catalog_request(CATALOG_DIR, "Qwen/Qwen3-30B-A3B", "training-lora", context="long")
 
 
 def test_smoke_request_rejects_a_mismatched_model_namespace():

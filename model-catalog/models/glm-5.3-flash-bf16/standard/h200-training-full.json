@@ -58,7 +58,8 @@
           "tuner_plugin": "ofi"
         },
         "ac_config": {
-          "combine_replay": true
+          "combine_replay": true,
+          "router_replay_recompute": true
         }
       }
     }
