@@ -439,7 +439,10 @@ _LM_PROJECTIONS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj
 # lists them, and vLLM applies LoRA to the language model only. These pairs build RL jobs, but the sampler does
 # not load the trainer's whole adapter, so inference_job_args serves the checkpoint with no catalog file.
 LORA_SAMPLER_TARGETS = {
+    ("google/gemma-3-4b-it", "long/h200-inference-lora"): _LM_PROJECTIONS,
     ("google/gemma-4-31B-it", "long/h200-inference-lora"): _LM_PROJECTIONS,
+    ("google/medgemma-1.5-4b-it", "long/h200-inference-lora"): _LM_PROJECTIONS,
+    ("google/medgemma-4b-it", "long/h200-inference-lora"): _LM_PROJECTIONS,
     ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "long/h200-inference-lora"): _LM_PROJECTIONS,
     ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "long/h200-inference-lora"): _LM_PROJECTIONS,
     ("Qwen/Qwen3-30B-A3B", "standard/h200-inference-lora"): _LM_PROJECTIONS,
