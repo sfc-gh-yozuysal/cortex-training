@@ -211,7 +211,6 @@ def test_validation_dates_match_completed_live_smokes():
 
     assert validated == {
         ("Qwen/Qwen3-4B-Instruct-2507", "long/h200-inference-full"): "2026-10-14",
-        ("Qwen/Qwen3-4B-Instruct-2507", "long/h200-training-full"): "2026-10-14",
         ("Qwen/Qwen3.5-4B", "standard/h200-training-lora"): "2026-09-02",
         ("Qwen/Qwen3.5-9B", "long/h200-inference-full"): "2026-10-14",
         ("Qwen/Qwen3.6-35B-A3B", "standard/h200-training-lora"): "2026-11-05",
@@ -634,6 +633,7 @@ H200_SFT_FILES = {
     ("Qwen/Qwen3-1.7B", "standard/h200-training-full"),
     ("Qwen/Qwen3-30B-A3B", "standard/h200-training-full"),
     ("Qwen/Qwen3-30B-A3B", "standard/h200-training-lora"),
+    ("Qwen/Qwen3-4B-Instruct-2507", "long/h200-training-full"),
     ("Qwen/Qwen3-4B-Instruct-2507", "long/h200-training-lora"),
     ("Qwen/Qwen3-4B-Instruct-2507", "standard/h200-training-full"),
     ("Qwen/Qwen3-8B", "long/h200-training-full"),
