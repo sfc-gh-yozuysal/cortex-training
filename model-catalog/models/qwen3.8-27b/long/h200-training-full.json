@@ -35,7 +35,10 @@
         },
         "shard_dense": true,
         "checkpoint_keep_attention": true,
-        "cuda_allocator_conf": "expandable_segments:True"
+        "cuda_allocator_conf": "expandable_segments:True",
+        "model_options": {
+          "liger": true
+        }
       }
     }
   ]

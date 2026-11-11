@@ -214,7 +214,6 @@ def test_validation_dates_match_completed_live_smokes():
         ("Qwen/Qwen3-4B-Instruct-2507", "long/h200-training-full"): "2026-10-14",
         ("Qwen/Qwen3.5-4B", "standard/h200-training-lora"): "2026-09-02",
         ("Qwen/Qwen3.5-9B", "long/h200-inference-full"): "2026-10-14",
-        ("Qwen/Qwen3.5-9B", "long/h200-training-full"): "2026-10-14",
         ("Qwen/Qwen3.6-35B-A3B", "standard/h200-training-lora"): "2026-11-05",
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "long/h200-training-full"): "2026-10-23",
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "long/h200-training-lora"): "2026-10-26",
@@ -225,8 +224,6 @@ def test_validation_dates_match_completed_live_smokes():
         ("google/medgemma-1.5-4b-it", "long/h200-training-full"): "2026-10-15",
         ("google/medgemma-4b-it", "long/h200-inference-full"): "2026-10-15",
         ("google/medgemma-4b-it", "long/h200-training-full"): "2026-10-15",
-        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "long/h200-training-full"): "2026-10-14",
-        ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "long/h200-training-full"): "2026-10-14",
         ("zai-org/GLM-5.3-Flash", "long/h200-inference-lora"): "2026-10-20",
         ("zai-org/GLM-5.3-Flash", "long/h200-training-lora"): "2026-10-20",
         ("zai-org/GLM-5.3-Flash-BF16", "long/h200-inference-full"): "2026-10-20",
@@ -502,7 +499,8 @@ def test_qwen_inference_uses_single_gpu_tensor_parallelism(model_id):
 def test_qwen35_9b_long_tier_uses_eight_gpus():
     training = _config(_body("Qwen/Qwen3.5-9B", "long/h200-training-full"))
 
-    assert (training["n_gpus"], training["sp_size"], training["train_batch_size"]) == (8, 8, 1)
+    # Two 262,144-token rows per step, each over four GPUs (the H200 SFT throughput final).
+    assert (training["n_gpus"], training["sp_size"], training["train_batch_size"]) == (8, 4, 2)
     for mode in ("full", "lora"):
         inference = _config(_body("Qwen/Qwen3.5-9B", f"long/h200-inference-{mode}"))
         assert (inference["n_gpus"], inference["vllm_config"]["tensor_parallel_size"]) == (8, 8)
@@ -643,10 +641,13 @@ H200_SFT_FILES = {
     ("Qwen/Qwen3-8B", "standard/h200-training-lora"),
     ("Qwen/Qwen3.5-2B", "long/h200-training-lora"),
     ("Qwen/Qwen3.5-2B", "standard/h200-training-full"),
+    ("Qwen/Qwen3.5-4B", "long/h200-training-full"),
     ("Qwen/Qwen3.5-4B", "long/h200-training-lora"),
     ("Qwen/Qwen3.5-4B", "standard/h200-training-full"),
+    ("Qwen/Qwen3.5-9B", "long/h200-training-full"),
     ("Qwen/Qwen3.5-9B", "long/h200-training-lora"),
     ("Qwen/Qwen3.5-9B", "standard/h200-training-full"),
+    ("Qwen/Qwen3.6-35B-A3B", "long/h200-training-full"),
     ("Qwen/Qwen3.6-35B-A3B", "long/h200-training-lora"),
     ("Qwen/Qwen3.6-35B-A3B", "standard/h200-training-full"),
     ("Qwen/Qwen3.8-27B", "long/h200-training-full"),
@@ -657,8 +658,10 @@ H200_SFT_FILES = {
     ("google/gemma-4-31B-it", "long/h200-training-full"),
     ("google/gemma-4-31B-it", "long/h200-training-lora"),
     ("google/gemma-4-31B-it", "standard/h200-training-full"),
+    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "long/h200-training-full"),
     ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "long/h200-training-lora"),
     ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "standard/h200-training-full"),
+    ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "long/h200-training-full"),
     ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "long/h200-training-lora"),
     ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "standard/h200-training-full"),
     ("zai-org/GLM-5.3-Flash-BF16", "standard/h200-training-full"),

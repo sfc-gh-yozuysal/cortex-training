@@ -57,7 +57,7 @@ models:
       - conversational-sft
       - inference-endpoint
       - math-grpo
-    last_validated: 2026-10-14
+    last_validated: null
   - id: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
     training: true
     inference: true
@@ -65,7 +65,7 @@ models:
       - conversational-sft
       - inference-endpoint
       - math-grpo
-    last_validated: 2026-10-14
+    last_validated: null
   - id: Qwen/Qwen3-0.6B
     training: true
     inference: true
