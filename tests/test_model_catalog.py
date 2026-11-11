@@ -639,6 +639,7 @@ H200_SFT_FILES = {
     ("Qwen/Qwen3-8B", "long/h200-training-lora"),
     ("Qwen/Qwen3-8B", "standard/h200-training-full"),
     ("Qwen/Qwen3-8B", "standard/h200-training-lora"),
+    ("Qwen/Qwen3.5-2B", "long/h200-training-full"),
     ("Qwen/Qwen3.5-2B", "long/h200-training-lora"),
     ("Qwen/Qwen3.5-2B", "standard/h200-training-full"),
     ("Qwen/Qwen3.5-4B", "long/h200-training-full"),
