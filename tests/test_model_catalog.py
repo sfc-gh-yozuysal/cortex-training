@@ -224,7 +224,6 @@ def test_validation_dates_match_completed_live_smokes():
         ("zai-org/GLM-5.3-Flash", "long/h200-inference-lora"): "2026-10-20",
         ("zai-org/GLM-5.3-Flash", "long/h200-training-lora"): "2026-10-20",
         ("zai-org/GLM-5.3-Flash-BF16", "long/h200-inference-full"): "2026-10-20",
-        ("zai-org/GLM-5.3-Flash-BF16", "long/h200-training-full"): "2026-10-20",
         ("thinkingmachines/Inkling-2-Small-MXFP8", "long/h200-inference-lora"): "2026-11-12",
         ("thinkingmachines/Inkling-2-Small-MXFP8", "long/h200-training-lora"): "2026-11-12",
         ("thinkingmachines/Inkling-2-Small-MXFP8", "standard/h200-inference-lora"): "2026-11-12",
@@ -666,6 +665,7 @@ H200_SFT_FILES = {
     ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "long/h200-training-full"),
     ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "long/h200-training-lora"),
     ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "standard/h200-training-full"),
+    ("zai-org/GLM-5.3-Flash-BF16", "long/h200-training-full"),
     ("zai-org/GLM-5.3-Flash-BF16", "standard/h200-training-full"),
 }
 # Same architecture as Gemma 3 4B: Gemma 3 4B's files under their own model ID.
@@ -683,6 +683,7 @@ _DEEPSPEED_FORK_FIELDS = ("optimizer_state_swap", "reduce_to_owners", "record_re
 # The files that run on DeepSpeed jaelee/zero-memory-upstream (its optimizer_state_swap); every other
 # file runs on stock DeepSpeed.
 H200_SFT_DEEPSPEED_FORK = {
+    ("zai-org/GLM-5.3-Flash-BF16", "long/h200-training-full"),
     ("zai-org/GLM-5.3-Flash-BF16", "standard/h200-training-full"),
 }
 # The files that need GDRCopy (gdrdrv on the hosts; NCCL 2.32.3 and DeepEP V2.5 in the image).
