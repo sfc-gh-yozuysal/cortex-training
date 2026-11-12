@@ -71,35 +71,43 @@ The validator checks:
 
 ## H200 SFT throughput files
 
-These training files are measured H200 SFT throughput finals: for each file,
-the job with the most tokens per GPU found on stock DeepSpeed, without
-GDRCopy. GLM-5.3-Flash-BF16's full file stays the stock one: on DeepSpeed
-`jaelee/zero-memory-upstream` (`31f47f19`, on DeepSpeed 0.19.10), whose ZeRO-1/2
-`optimizer_state_swap` keeps part of the FP32 optimizer state in host memory
-and streams it through the step, it trained fewer tokens per GPU. Full-weight
-files keep their tier's `max_seq_len`. LoRA files train at 262,144 tokens, or
-at the model's own maximum when its context is shorter: Qwen3's 40,960 and
-Gemma 3's 131,072.
+These training files are measured H200 SFT throughput finals: for each file, the
+job with the most tokens per GPU found without GDRCopy, on the fewest nodes it
+fits. Every full-weight file keeps FP32 master weights and FP32 Adam moments.
+The files marked "fork" below run on DeepSpeed `jaelee/zero-memory-upstream`
+(`b9af87b1`, on DeepSpeed master `c289ad62`): its ZeRO-1/2
+`optimizer_state_swap` keeps the FP32 optimizer state in pinned host memory and
+streams it through the step. Every other file runs on stock DeepSpeed.
+Standard files keep their tier's `max_seq_len`. Long files, full and LoRA, train
+at 262,144 tokens, or at the model's own maximum when its context is shorter:
+Qwen3's 40,960 and Gemma 3's 131,072.
 
 | Model | Files |
 |---|---|
-| `Qwen/Qwen3-0.6B` | `standard/h200-training-full` (1 GPU), `standard/h200-training-lora` (1 GPU), `long/h200-training-lora` |
-| `Qwen/Qwen3-1.7B` | `standard/h200-training-full`, `long/h200-training-lora` |
-| `Qwen/Qwen3-4B-Instruct-2507` | `standard/h200-training-full` (1 GPU), `long/h200-training-lora` |
-| `Qwen/Qwen3-8B` | `standard/h200-training-full` (4 GPUs), `standard/h200-training-lora` (4 GPUs), `long/h200-training-lora` |
-| `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B` | `standard/h200-training-full`, `long/h200-training-lora` |
+| `Qwen/Qwen3-0.6B` | `standard/h200-training-full` (1 GPU), `standard/h200-training-lora` (1 GPU), `long/h200-training-full` (1 GPU), `long/h200-training-lora` |
+| `Qwen/Qwen3-1.7B` | `standard/h200-training-full`, `long/h200-training-full`, `long/h200-training-lora` |
+| `Qwen/Qwen3-4B-Instruct-2507` | `standard/h200-training-full` (1 GPU), `long/h200-training-full`, `long/h200-training-lora` |
+| `Qwen/Qwen3-8B` | `standard/h200-training-full` (4 GPUs), `standard/h200-training-lora` (4 GPUs), `long/h200-training-full` (4 GPUs), `long/h200-training-lora` |
+| `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B` | `standard/h200-training-full`, `long/h200-training-full`, `long/h200-training-lora` |
+| `Qwen/Qwen3.5-9B` | `standard/h200-training-full` (4 GPUs), `long/h200-training-full`, `long/h200-training-lora` |
 | `Qwen/Qwen3.8-27B` | `standard/h200-training-full`, `long/h200-training-full`, `long/h200-training-lora` |
-| `Qwen/Qwen3.5-9B` | `standard/h200-training-full` (2 GPUs), `long/h200-training-lora` |
 | `Qwen/Qwen3-30B-A3B` | `standard/h200-training-full`, `standard/h200-training-lora` |
-| `Qwen/Qwen3.6-35B-A3B` | `standard/h200-training-full`, `long/h200-training-lora` |
-| `google/gemma-3-4b-it`, `google/medgemma-4b-it`, `google/medgemma-1.5-4b-it` | `standard/h200-training-full` (1 GPU), `long/h200-training-lora` |
+| `Qwen/Qwen3.6-35B-A3B` | `standard/h200-training-full`, `long/h200-training-full`, `long/h200-training-lora` |
+| `google/gemma-3-4b-it`, `google/medgemma-4b-it`, `google/medgemma-1.5-4b-it` | `standard/h200-training-full` (1 GPU), `long/h200-training-full`, `long/h200-training-lora` |
 | `google/gemma-4-31B-it` | `standard/h200-training-full`, `long/h200-training-full`, `long/h200-training-lora` |
-| `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16`, `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` | `standard/h200-training-full`, `long/h200-training-lora` |
-| `zai-org/GLM-5.3-Flash-BF16` | `standard/h200-training-full` (128 GPUs) |
+| `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16`, `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` | `standard/h200-training-full`, `long/h200-training-full`, `long/h200-training-lora` |
+| `zai-org/GLM-5.3-Flash-BF16` | `standard/h200-training-full` (32 GPUs, fork), `long/h200-training-full` (32 GPUs, fork) |
 
 The other files in the table use 8 GPUs. The MedGemma files are Gemma 3 4B's
 bodies under their own model ID (same architecture; not measured on the
 MedGemma checkpoints).
+
+The table's MoE full file that dispatches through UCCL-EP at 262,144 tokens,
+GLM-5.3-Flash-BF16's long full file, keeps the GPUs nearly full. It needs a
+UCCL build with upstream's 18b588a ("Keep the D2H handle table in device
+memory", #1085). With UCCL a3d520e alone, an allocation that finds the GPU full
+moves the EP handle table to host memory, and the next expert-parallel kernel
+faults (Xid 31, an illegal memory access).
 
 The MoE LoRA files train routed-expert LoRA through `target_parameters`, with
 one exception: the Qwen3.6-35B-A3B long LoRA file keeps the attention-only
@@ -130,12 +138,14 @@ a 64K sequence per GPU (Qwen3.8-27B's standard file, its checkpointed
 activations offloaded to host memory), and the long full files train 256K
 rows on eight GPUs: Gemma 4's used 16 before and Qwen3.8-27B's 32.
 
-They need server changes that are not yet in a released image:
+They need server changes that are not yet in a released image, the stacked
+branches:
 
-- Arctic-Platform `jaelee/model-opt` (`b6e130e`)
-- dss-platform `jaelee/model-opt-clean` (`08e884c`)
+- Arctic-Platform `jaelee/stack/18-gemma-4` (on main `316a25c`)
+- dss-platform `jaelee/stack/18-gemma-4` (on main `e7ca019`)
 
-DeepSpeed is the stock release; the files set no DeepSpeed fork field. An
+The files marked "fork" need that DeepSpeed branch in the image; the others run
+on the stock release and set no DeepSpeed fork field. An
 image without these branches drops or rejects fields such as `numa_bind`,
 `shard_dense`, `checkpoint_keep_attention`, `fused_qk_norm_rope`, `ac_config.core_replay`
 and the `prime_rl` loader options. The
