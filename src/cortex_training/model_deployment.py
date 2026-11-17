@@ -222,7 +222,8 @@ class ModelDeploymentSpec:
         source_type: `"base_model"` or `"checkpoint"`.
         gpu_type: The GPU type: `"H200"`, `"B200"`, or `"B300"`.
         source_job_id: For a checkpoint source, the job that the checkpoint belongs to.
-        checkpoint_id: For a checkpoint source, the checkpoint to serve.
+        checkpoint_id: For a checkpoint source, the checkpoint to serve. It must be a completed
+            `weights-only` checkpoint.
         deployment_class: The deployment class. Only `"EVALUATION"` is supported.
     """
 
@@ -256,7 +257,8 @@ class ModelDeploymentSpec:
                 `deployment.gpu_type` is `H200`, `B200`, or `B300`, and case doesn't matter.
                 `deployment.gpus_per_replica` is 1, 2, 4, or 8. `min_replicas` times
                 `gpus_per_replica` must be at most 8 or a multiple of 8. A `source` of type
-                `checkpoint` has `job_id` and `checkpoint_id` instead of `model`.
+                `checkpoint` has `job_id` and `checkpoint_id` instead of `model`, and the
+                checkpoint must be a completed `weights-only` checkpoint.
 
         Returns:
             The validated spec.

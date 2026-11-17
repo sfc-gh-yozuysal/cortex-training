@@ -1195,7 +1195,7 @@ class Hardware(str, Enum):
     """The GPU type for a job or a capacity query.
 
     If you omit the hardware, the job or query uses `H200`. A value that isn't one of these is
-    rejected before the request is sent.
+    rejected before the request is sent. String values are case-sensitive: `"h200"` is rejected.
     """
 
     H200 = "H200"
@@ -1357,8 +1357,11 @@ class TrainingConfig(BaseModel):
 
     The `optimizer` is checked and rewritten into a standard form when you create the object. A
     block that holds only `gradient_clipping` moves that value to the `gradient_clipping` field
-    and leaves `optimizer` empty. Other fields that you pass are sent to the service unchanged,
-    and you can read them from `model_extra`.
+    and leaves `optimizer` empty. Other fields that you pass are kept in `model_extra` and sent to
+    the service, but not all unchanged. A `peft_config` is checked and rewritten into a standard
+    form, and a `ds_config` that uses DeepSpeed ZeRO stage 3 is rejected. In the other fields and in
+    a `prime_rl` block, `fp32_lm_head` and `fused_lm_head_token_chunk_size` are rejected unless
+    `fused_cross_entropy` is `false`. An invalid value raises `pydantic.ValidationError`.
 
     Attributes:
         optimizer: The optimizer settings, such as `{"name": "AdamW", "lr": 1e-4}`.
@@ -1454,8 +1457,9 @@ class TrainingConfig(BaseModel):
 class InferenceConfig(BaseModel):
     """The sampling settings of a sampling sub-job.
 
-    Other fields that you pass are sent to the service unchanged, and you can read them from
-    `model_extra`.
+    Other fields that you pass are kept in `model_extra` and sent to the service. A
+    `peft_config` is checked and rewritten into a standard form, and the rest are sent
+    unchanged. An invalid value raises `pydantic.ValidationError`.
 
     Attributes:
         max_seq_len: The maximum sequence length for sampling. Must be greater than 0.
@@ -1589,8 +1593,10 @@ class SubJobConfig(BaseModel):
                 (`n_gpus`), because the optimizer states are split across GPUs and can't be resized.
                 If you omit it, the service default is `True`. You can set it only when you create
                 the job.
-            extra_training: More training settings that are sent as given, such as `model_provider`,
-                `ds_config`, and `peft_config`. Keys that have their own argument are ignored.
+            extra_training: More training settings, such as `model_provider`, `ds_config`, and
+                `peft_config`. Keys that have their own argument are ignored. The settings are
+                checked as `TrainingConfig` describes: a `peft_config` is rewritten into a
+                standard form, and a ZeRO stage 3 `ds_config` is rejected.
             global_batch_size: The batch size across all GPUs.
             dtype: The model data type, such as `"bfloat16"`.
             seed: The random seed.
@@ -1600,6 +1606,10 @@ class SubJobConfig(BaseModel):
 
         Returns:
             A `SubJobConfig` for a training sub-job.
+
+        Raises:
+            pydantic.ValidationError: If a value isn't valid, including a setting in
+                `extra_training` that `TrainingConfig` rejects.
         """
         _typed_training = set(TrainingConfig.model_fields.keys())
         passthrough_training = {k: v for k, v in (extra_training or {}).items() if k not in _typed_training}
@@ -1647,9 +1657,9 @@ class SubJobConfig(BaseModel):
             n_gpus: The number of GPUs.
             multiplex_job_id: The sub-job, as `{job_id}:{sub_job_type}:{index}`, in another job
                 whose GPUs this sub-job shares.
-            extra_sampling: More sampling settings that are sent as given, such as
-                `gpu_memory_utilization` and `vllm_config`. Keys that have their own argument are
-                ignored.
+            extra_sampling: More sampling settings, such as `gpu_memory_utilization` and
+                `vllm_config`, sent as given except that a `peft_config` is checked and rewritten
+                into a standard form. Keys that have their own argument are ignored.
             job_type: Kept for compatibility. Only `JobType.SAMPLING` is accepted.
             global_batch_size: The batch size across all GPUs.
             dtype: The model data type, such as `"bfloat16"`.
@@ -1663,6 +1673,8 @@ class SubJobConfig(BaseModel):
 
         Raises:
             ValueError: If `job_type` isn't `JobType.SAMPLING`.
+            pydantic.ValidationError: If a value isn't valid, including an invalid `peft_config`
+                in `extra_sampling`.
         """
         _reject_log_probability_sub_job(job_type, location="sampling_job().job_type")
         if job_type != JobType.SAMPLING:
@@ -1820,7 +1832,8 @@ def create_job_body_from_job(job: Mapping[str, Any], *, experiment_name: str | N
     so is `experiment_name` when you don't pass one. The fields the service adds, such as
     `job_id`, `status`, and the times, are left out. A sub-job that started from external
     weights has `source_checkpoint_info.external_stage_path` set to `None`, for you to fill in,
-    because the job record doesn't say which weights.
+    because the job record doesn't say which weights. For a model-deployment job, the
+    `experiment_name` argument is ignored and a timeout that the job didn't set isn't filled in.
 
     Pass the body to `create_job_from_body`.
 
@@ -2833,15 +2846,36 @@ class CortexTrainingClient:
     with `create_job`. Close the client when you're done with it, or use it as a
     context manager so that it closes itself on exit.
 
-    By default, the client sends best-effort telemetry to Snowflake about its own
-    operations: an event when an operation fails, an event with the outcome of each
-    log or metrics download, and aggregate counts and durations of operations by
-    outcome. Events carry the operation name, timing, request and retry counts,
-    identifiers such as the job, sub-job, request, and checkpoint IDs, the SDK
-    version, and your Snowflake account host. A failure also carries the error type,
-    HTTP status, and error code, and a message with common credential patterns
-    removed. Telemetry never changes the result of a call, and errors in sending it
-    are ignored. To turn it off, set `CORTEX_TRAINING_DISABLE_TELEMETRY=1` before you
+    A call that reaches the service raises `requests.HTTPError` when the service
+    answers with an error, and `requests.RequestException` when the request can't be
+    made, after retries. `DatabaseAccessError`, a subclass of `requests.HTTPError`,
+    means that the configured database or schema can't be used. `create_model_deployment`
+    and the model-deployment methods that take a deployment ID raise `RuntimeError`
+    instead. Each method's Raises section lists only its other errors.
+
+    A client from `from_configs`, or from the deprecated `from_pat` or
+    `from_connection_name`, sends best-effort telemetry to Snowflake about its own
+    operations. A client that `for_job` returns shares its parent's telemetry, and a
+    client that you build directly from a `base_url` sends none. The client always
+    sends aggregate counts, durations, retry counts, and request counts for each
+    operation, outcome (`success`, `failure`, `expected_failure`, or `cancelled`), and
+    client (SDK, CLI, or TUI). They go out in the background about every 30 seconds,
+    and when the client closes or the interpreter exits. It also sends an event record
+    for every failed call and failed sign-in, and for each successful or cancelled log
+    or metrics download. A record carries the operation name, timing, attempt, request,
+    and retry counts, the job, sub-job, request, and checkpoint IDs involved, Snowflake
+    request IDs, and, for downloads, file, chunk, and byte counts. A failure adds the
+    error type, HTTP status, error code, and error message, cut to 512 characters with
+    common credential patterns removed. The message can include the service's text,
+    database, schema, and role names, and local file paths. Every record and metric
+    carries your Snowflake account host, the SDK version, and the client, and records
+    also carry a random ID generated per process. The TUI sends more records. Set
+    `CORTEX_TRAINING_ENABLE_SUCCESS_TELEMETRY` to `1`, `true`, `yes`, or `on` to also
+    send a record for every successful call, or to any other value, such as `0`, to stop
+    the records for successful and cancelled downloads. This variable never affects
+    aggregate counts or failure records. Telemetry never changes the result of a call, and
+    errors in sending it are ignored. To turn all of it off, set
+    `CORTEX_TRAINING_DISABLE_TELEMETRY` to `1`, `true`, `yes`, or `on` (any case) before you
     create the client.
     """
 
@@ -2870,13 +2904,13 @@ class CortexTrainingClient:
             database: The database that the client's job calls apply to.
             schema: The schema that the client's job calls apply to.
             endpoint: The service name in request paths.
-            poll_interval: Seconds before the first poll of a wait, such as
-                `wait_for_job`. Must be greater than 0.
+            poll_interval: Seconds to wait after the first poll of a wait, such as
+                `wait_for_job`. The first poll happens at once. Must be greater than 0.
             poll_timeout: Seconds that a wait polls before it gives up. Must be greater
                 than 0.
-            poll_backoff_multiplier: How much each poll interval grows after the last
-                one. Must be at least 1.0.
-            poll_max_interval: Longest interval between polls, in seconds. Must be at
+            poll_backoff_multiplier: How much each wait after the first one grows
+                compared with the wait before it. Must be at least 1.0.
+            poll_max_interval: Longest wait between polls, in seconds. Must be at
                 least `poll_interval`.
             pool_maxsize: Size of the HTTP connection pool. Must be greater than 0.
             max_retries: How many times a request that failed with a temporary error is
@@ -3030,9 +3064,10 @@ class CortexTrainingClient:
            `CORTEX_TRAINING_HOST` and `CORTEX_TRAINING_PAT`. Use these for automated jobs.
 
         The database is the first of `database`, the `CORTEX_TRAINING_DATABASE`
-        environment variable, the profile's database, and `CORTEX_TRAINING_DB`. The schema
-        follows the same order with `schema`, `CORTEX_TRAINING_SCHEMA`, and the profile's
-        schema, and then falls back to `PUBLIC`.
+        environment variable, and the profile's database. If none is set, it's the
+        database named `CORTEX_TRAINING_DB`, which is a default name, not an environment
+        variable. The schema follows the same order with `schema`, `CORTEX_TRAINING_SCHEMA`,
+        and the profile's schema, and then falls back to `PUBLIC`.
 
         Args:
             connection: The name of the Snowflake connection profile to use. If you omit
@@ -3045,6 +3080,13 @@ class CortexTrainingClient:
 
         Returns:
             A new `CortexTrainingClient`.
+
+        Raises:
+            ValueError: If no connection profile is set up, the profile to use doesn't
+                exist, the saved settings file isn't valid, or only one of
+                `CORTEX_TRAINING_HOST` and `CORTEX_TRAINING_PAT` is set.
+            RuntimeError: If signing in with the profile fails. The message says why that
+                profile was used.
         """
         from cortex_training import _picker
 
@@ -3257,11 +3299,13 @@ class CortexTrainingClient:
         """Send a custom telemetry event to Snowflake.
 
         The call is best effort: it never raises, and errors in sending the event are
-        ignored. The `operation`, `value`, and `attributes` you pass are sent to
-        Snowflake, so don't put sensitive data in them, such as prompts or credentials.
-        Keep attribute values to a small set of distinct values. A client created with
-        the `CORTEX_TRAINING_DISABLE_TELEMETRY=1` environment variable set, and a
-        client built directly from a `base_url`, ignore the call.
+        ignored. The event carries the `operation`, `value`, and `attributes` you pass,
+        and also your Snowflake account host, the SDK version, a random ID generated per
+        process, and the client (SDK, CLI, or TUI). Don't put sensitive data in what you
+        pass, such as prompts or credentials. Keep attribute values to a small set of
+        distinct values. A client created while `CORTEX_TRAINING_DISABLE_TELEMETRY` is
+        `1`, `true`, `yes`, or `on` (any case), and a client built directly from a
+        `base_url`, ignore the call.
 
         Args:
             operation: The name of the event.
@@ -3921,7 +3965,9 @@ class CortexTrainingClient:
             The job ID.
 
         Raises:
-            ValueError: If `sub_jobs` is empty, a sub-job isn't valid, or a timeout is out of range.
+            ValueError: If `sub_jobs` is empty, a sub-job isn't valid, `hardware` isn't one of the
+                `Hardware` values (strings are case-sensitive), or a timeout isn't a whole number
+                or is out of range.
         """
         if not sub_jobs:
             raise ValueError("create_job requires a non-empty sub_jobs list")
@@ -3968,8 +4014,9 @@ class CortexTrainingClient:
         """Create a job from a raw request body, for tooling that already has the JSON payload.
 
         `create_job` is the typed path for Python callers. The same sub-job rules apply: at most
-        one `training` sub-job, and no `log_probability` sub-jobs. An invalid `peft_config` in
-        the body raises `ValueError` before the request is sent. The rest of the body, including
+        one `training` sub-job, and no `log_probability` sub-jobs. An invalid `peft_config` or a
+        ZeRO stage 3 `ds_config` in the body raises `ValueError` before the request is sent, and a
+        valid `peft_config` is rewritten into a standard form. The rest of the body, including
         `optimizer`, is sent as given.
 
         Args:
@@ -4018,7 +4065,8 @@ class CortexTrainingClient:
         """Create a model deployment and return its metadata.
 
         The metadata includes the `deployment` ID and the endpoint's `base_url`. The deployment
-        starts in `PENDING`. Call `wait_for_model_deployment` to wait until it's `READY`.
+        starts in `PENDING`. Call `wait_for_model_deployment` to wait until it's `READY`. A
+        checkpoint source must be a completed `weights-only` checkpoint.
 
         Args:
             spec: A `ModelDeploymentSpec`, or a dictionary with the same `deployment`, `source`,
@@ -4029,8 +4077,11 @@ class CortexTrainingClient:
                 `replicas`, `gpus_per_replica`, and `base_url`.
 
         Raises:
-            ValueError: If the spec isn't valid.
-        """
+            ValueError: If the spec isn't valid, or a checkpoint source's job has no training
+                sub-job with a model name.
+            RuntimeError: If a request fails. The message keeps the service's error code and
+                message.
+        """  # noqa: DOC501 - raised through _sanitized_model_deployment_request_error, which returns it
         raw_spec = (
             spec.to_public_spec()
             if isinstance(spec, ModelDeploymentSpec)
@@ -4046,8 +4097,7 @@ class CortexTrainingClient:
                 )
             response = self.create_job_from_body(spec._to_create_job_body())
         except requests.exceptions.RequestException as exc:
-            sanitized = _sanitized_model_deployment_request_error(exc, None)
-            raise sanitized from exc
+            raise _sanitized_model_deployment_request_error(exc, None) from exc
         deployment_id = _deployment_id_from_job_id(response.get(JOB_FIELD_JOB_ID))
         return _pending_model_deployment_metadata(
             spec, deployment_id, self.model_deployment_base_url
@@ -4162,7 +4212,9 @@ class CortexTrainingClient:
 
         Args:
             status: Return only jobs in this status, such as `running`. Only one status is
-                accepted. If you omit it, the call returns every job.
+                accepted: a group such as `active` or a comma-separated list matches no jobs. To
+                filter on several statuses, use `iter_jobs`. If you omit it, the call returns
+                every job.
 
         Returns:
             A list of jobs, each a dictionary as `get_job` returns.
@@ -4218,7 +4270,10 @@ class CortexTrainingClient:
     ) -> list[dict[str, Any]]:
         """Return the metadata for every deployment in the client's database and schema.
 
-        Entries don't include `base_url`. Use `get_model_deployment` to get it.
+        Entries don't include `base_url`. Use `get_model_deployment` to get it. An entry's
+        `model_source` is `base_model` even for a checkpoint deployment, because the service
+        doesn't report the checkpoint yet. `gpu_type` is `None` when the service doesn't report
+        the hardware, and `failure` is present only when the service gives a reason.
 
         Args:
             status: Return only deployments in this status, or in any of these statuses, such as
@@ -4229,7 +4284,8 @@ class CortexTrainingClient:
             A list of deployment metadata dictionaries.
 
         Raises:
-            ValueError: If a status isn't a deployment status.
+            ValueError: If a status isn't a deployment status, or the service returns a
+                deployment record that isn't valid.
         """
         wanted = _model_deployment_status_filter(status)
         deployments = []
@@ -4246,13 +4302,22 @@ class CortexTrainingClient:
 
         The metadata includes `deployment`, `status`, `model_source`, and the capacity fields.
         `base_url` is included unless the deployment is `FAILED`, `DROPPING`, `DROPPED`, or
-        `TERMINATED`. `failure` is included for a `FAILED` or `TERMINATED` deployment.
+        `TERMINATED`. `failure` is included for a `FAILED` or `TERMINATED` deployment only when
+        the service gives a reason. `gpu_type` is `None` when the service doesn't report the
+        hardware. A checkpoint deployment currently reads back with a `base_model`
+        `model_source`, because the service doesn't report the checkpoint yet.
 
         Args:
             deployment_id: The deployment ID, in the form `sf-ct-<UUID>`.
 
         Returns:
             The deployment's metadata.
+
+        Raises:
+            ValueError: If `deployment_id` isn't an `sf-ct-<UUID>` ID with a lowercase UUID, or
+                it isn't a model deployment.
+            RuntimeError: If a request fails, including when the deployment isn't found. The
+                message keeps the service's error code and message.
         """
         job = self._get_model_deployment_job(_job_id_from_deployment_id(deployment_id))
         return _model_deployment_metadata(
@@ -4264,13 +4329,22 @@ class CortexTrainingClient:
 
         The configuration is grouped under `spec`, with the same `deployment`, `source`, and
         `inference` fields as the create spec. It's a read view, so it isn't guaranteed to be
-        valid input for `create_model_deployment`.
+        valid input for `create_model_deployment`. A checkpoint deployment currently reads back
+        with a `base_model` source, because the service doesn't report the checkpoint yet.
+        `spec.deployment.gpu_type` is `None` when the service doesn't report the hardware, and
+        `failure` is present only when the service gives a reason.
 
         Args:
             deployment_id: The deployment ID, in the form `sf-ct-<UUID>`.
 
         Returns:
             The deployment's status, endpoint, database, schema, and `spec`.
+
+        Raises:
+            ValueError: If `deployment_id` isn't an `sf-ct-<UUID>` ID with a lowercase UUID, or
+                it isn't a model deployment.
+            RuntimeError: If a request fails, including when the deployment isn't found. The
+                message keeps the service's error code and message.
         """
         return _model_deployment_description(
             self.get_model_deployment(deployment_id),
@@ -4284,7 +4358,10 @@ class CortexTrainingClient:
 
         Polling follows the client's `poll_interval`, `poll_backoff_multiplier`,
         `poll_max_interval`, and `poll_timeout` settings. A timeout doesn't drop the
-        deployment, which keeps holding GPUs until you drop it.
+        deployment, which keeps holding GPUs until you drop it. As for `get_model_deployment`,
+        a checkpoint deployment currently reads back with a `base_model` source, `gpu_type` is
+        `None` when the service doesn't report the hardware, and `failure` is present only when
+        the service gives a reason.
 
         Args:
             deployment_id: The deployment ID, in the form `sf-ct-<UUID>`.
@@ -4293,6 +4370,10 @@ class CortexTrainingClient:
             The deployment's metadata, including `base_url`.
 
         Raises:
+            ValueError: If `deployment_id` isn't an `sf-ct-<UUID>` ID with a lowercase UUID, or
+                it isn't a model deployment.
+            RuntimeError: If a request fails. The message keeps the service's error code and
+                message.
             ModelDeploymentWaitError: If the deployment reaches `FAILED`, `TERMINATED`, or
                 `DROPPED`. It's a `RuntimeError`, and its `deployment` attribute holds the
                 last metadata that was read.
@@ -4358,8 +4439,11 @@ class CortexTrainingClient:
                 deployment is dropped or being dropped.
 
         Raises:
-            requests.HTTPError: If a request fails, other than for a deployment that no longer exists.
-        """
+            ValueError: If `deployment_id` isn't an `sf-ct-<UUID>` ID with a lowercase UUID, or
+                it isn't a model deployment.
+            RuntimeError: If a request fails, other than for a deployment that no longer exists.
+                The message keeps the service's error code and message.
+        """  # noqa: DOC501 - the decorator turns the HTTPError raised here into the RuntimeError
         job_id = _job_id_from_deployment_id(deployment_id)
         try:
             job = self._get_model_deployment_job(job_id)
@@ -4387,9 +4471,10 @@ class CortexTrainingClient:
     ) -> Iterator[dict]:
         """Yield the jobs you can see across the account, newest first.
 
-        Pages are fetched as you iterate. The server applies every filter. Each job also includes
-        `database_name` and `schema_name`. To make per-job calls on one, use `for_job`. Arguments
-        are checked when you call the method, before any request.
+        Pages are fetched as you iterate, so request errors surface as you iterate, not on the
+        call. The server applies every filter. Each job also includes `database_name` and
+        `schema_name`. To make per-job calls on one, use `for_job`. Arguments are checked when you
+        call the method, before any request.
 
         If account-level job listing isn't enabled for your account, the call raises an HTTP 404
         error without retrying.
@@ -4397,8 +4482,9 @@ class CortexTrainingClient:
         Args:
             database: Return only jobs in this database.
             schema: Return only jobs in this schema. Requires `database`.
-            status: One status or a list of statuses. `active` and `terminal` each name a group of
-                statuses.
+            status: One status or a list of statuses, case-insensitive. `active` names the
+                statuses `pending`, `placing`, `initializing`, and `running`, and `terminal` names
+                `failed`, `cancelled`, and `terminated`. `pending` alone doesn't include `placing`.
             submitted_by: Return only jobs submitted by this user name.
             created_after: Return only jobs created at or after this time: a `date`, a
                 `datetime`, or a string. A `datetime` without a time zone is treated as UTC.
@@ -4456,8 +4542,9 @@ class CortexTrainingClient:
         Args:
             database: Return only jobs in this database.
             schema: Return only jobs in this schema. Requires `database`.
-            status: One status or a list of statuses. `active` and `terminal` each name a group of
-                statuses.
+            status: One status or a list of statuses, case-insensitive. `active` names the
+                statuses `pending`, `placing`, `initializing`, and `running`, and `terminal` names
+                `failed`, `cancelled`, and `terminated`. `pending` alone doesn't include `placing`.
             submitted_by: Return only jobs submitted by this user name.
             created_after: Return only jobs created at or after this time: a `date`, a
                 `datetime`, or a string. A `datetime` without a time zone is treated as UTC.
@@ -4677,6 +4764,10 @@ class CortexTrainingClient:
 
         Returns:
             A dictionary with all of the fields above.
+
+        Raises:
+            ValueError: If `hardware` isn't one of the `Hardware` values. Strings are
+                case-sensitive.
         """
         params = {}
         if hardware is not None:
@@ -4707,7 +4798,8 @@ class CortexTrainingClient:
             The `get_capacity` fields and a `breakdown` field.
 
         Raises:
-            ValueError: If a dimension isn't `"job_type"` or `"submitted_by"`.
+            ValueError: If a dimension isn't `"job_type"` or `"submitted_by"`, or `hardware` isn't
+                one of the `Hardware` values. Strings are case-sensitive.
         """
         dimensions = _capacity_breakdown_dimensions(dimensions)
         params = {}
@@ -4874,11 +4966,17 @@ class CortexTrainingClient:
     def create_snowpark_session(self) -> Any:
         """Create a Snowpark `Session` that uses this client's programmatic access token.
 
-        The client must have been created with a programmatic access token. Install the
-        `snowflake-snowpark-python` package to use this call.
+        Only a client that signed in with a host and programmatic access token supports this
+        call, as `from_configs` does from `CORTEX_TRAINING_HOST` and `CORTEX_TRAINING_PAT`
+        when you have no connection profile. Install the `snowflake-snowpark-python` package
+        to use it.
 
         Returns:
             A Snowpark `Session`.
+
+        Raises:
+            RuntimeError: If the client didn't sign in that way, for example because it uses a
+                connection profile.
         """
         from snowflake.snowpark import Session
 
@@ -6741,7 +6839,9 @@ class CortexTrainingClient:
             strict: Raise an error for a part that can't be read, instead of skipping it and
                 listing it in the result's `skipped_chunks` and `warnings`.
             stale_after_seconds: While the job is running, warn about a sub-job whose newest output
-                is older than this. `None` turns the warning off.
+                is older than this many seconds. The call also warns when the job ended moments
+                ago, so the last output might still be uploading. `None` turns both warnings
+                off. Must be greater than 0 or `None`.
             transfer_timeout_seconds: Abandon and retry a request that's still running after this
                 many seconds. `None` turns the limit off.
 
@@ -6760,6 +6860,10 @@ class CortexTrainingClient:
             NoChunksError: If a sub-job named in `sub_job_ids` has nothing saved yet.
             DownloadCancelled: If a callback raises it to cancel the download. The call isn't
                 counted as a failure.
+            TypeError: If `sub_job_ids` is a single string.
+            ValueError: If `max_workers`, `stale_after_seconds`, `transfer_timeout_seconds`, or
+                `preview_seconds` is out of range, `preview_seconds` and `on_preview` aren't given
+                together, or `sub_job_ids` is empty.
         """
         named = None if sub_job_ids is None or isinstance(sub_job_ids, (str, bytes)) else list(sub_job_ids)
         return self._download_gzip_artifacts(
@@ -6822,8 +6926,11 @@ class CortexTrainingClient:
             sub_job_ids: Download only these sub-jobs.
             strict: Raise an error for a part that can't be read, instead of skipping it and
                 listing it in the result's `skipped_chunks` and `warnings`.
-            stale_after_seconds: While the job is running, warn about a sub-job whose newest output
-                is older than this. `None` turns the warning off.
+            stale_after_seconds: While the job is running, warn about a sub-job whose newest metrics
+                are older than this many seconds. The call also warns when the job ended moments
+                ago, so the last metrics might still be uploading, and about a sub-job that has
+                console output but no metrics. `None` turns all of these warnings off. Must be
+                greater than 0 or `None`.
             transfer_timeout_seconds: Abandon and retry a request that's still running after this
                 many seconds. `None` turns the limit off.
             priority: Sub-jobs to download first, in this order. The rest follow in ID order, and
@@ -6844,6 +6951,10 @@ class CortexTrainingClient:
             NoChunksError: If a sub-job named in `sub_job_ids` has nothing saved yet.
             DownloadCancelled: If a callback raises it to cancel the download. The call isn't
                 counted as a failure.
+            TypeError: If `sub_job_ids` or `priority` is a single string.
+            ValueError: If `max_workers`, `stale_after_seconds`, `transfer_timeout_seconds`, or
+                `preview_seconds` is out of range, `preview_seconds` and `on_preview` aren't given
+                together, or `sub_job_ids` is empty.
         """
         return self._download_gzip_artifacts(
             job_id,
@@ -6905,8 +7016,9 @@ class CortexTrainingClient:
             sub_job_ids: Download only these sub-jobs.
             strict: Raise an error for a part that can't be read, instead of skipping it and
                 listing it in the result's `skipped_chunks` and `warnings`.
-            stale_after_seconds: Accepted for consistency with `download_metrics`. This download
-                never warns about stalled uploads.
+            stale_after_seconds: This download never warns about stalled uploads. It warns only when
+                the job ended moments ago, so the last rows might still be uploading, and `None`
+                turns that warning off. Must be greater than 0 or `None`.
             transfer_timeout_seconds: Abandon and retry a request that's still running after this
                 many seconds. `None` turns the limit off.
             priority: Sub-jobs to download first, in this order. The rest follow in ID order, and
@@ -6921,6 +7033,9 @@ class CortexTrainingClient:
         Raises:
             DownloadCancelled: If a callback raises it to cancel the download. The call isn't
                 counted as a failure.
+            TypeError: If `sub_job_ids` or `priority` is a single string.
+            ValueError: If `max_workers`, `stale_after_seconds`, or `transfer_timeout_seconds` is
+                out of range, or `sub_job_ids` is empty.
         """
         return self._download_gzip_artifacts(
             job_id,
@@ -6985,8 +7100,10 @@ class CortexTrainingClient:
                 `filename` and `saved_path`, plus `chunk_count` for `"stdout"`.
 
         Raises:
-            ValueError: If `log_type` isn't `"execution"` or `"stdout"`.
-            RuntimeError: If a downloaded file is missing from disk.
+            ValueError: If `log_type` isn't `"execution"` or `"stdout"`, `deployment_id` isn't an
+                `sf-ct-<UUID>` ID with a lowercase UUID, or it isn't a model deployment.
+            RuntimeError: If a request fails. The message keeps the service's error code and
+                message.
         """
         if log_type not in {"execution", "stdout"}:
             raise ValueError("log_type must be either 'execution' or 'stdout'")
@@ -7046,7 +7163,11 @@ class CortexTrainingClient:
                 file's `filename`, `saved_path`, and `chunk_count`.
 
         Raises:
-            RuntimeError: If a downloaded file is missing from disk.
+            ValueError: If `deployment_id` isn't an `sf-ct-<UUID>` ID with a lowercase UUID, or
+                it isn't a model deployment.
+            RuntimeError: If a request fails, or if the deployment has console output but no GPU
+                metrics yet, so there's no metrics file to save. A request error message keeps the
+                service's error code and message.
         """
         job_id = _job_id_from_deployment_id(deployment_id)
         # Refuse IDs whose backing job is not a model deployment.
@@ -7361,6 +7482,11 @@ class CortexTrainingClient:
 
         Returns:
             The request ID.
+
+        Raises:
+            ChunkGroupError: If the service rejects the batch, which the client sends in several
+                parts when it's large. The error is a `ChunkGroupRestartError` or a
+                `ChunkGroupConflictError`.
         """
         self._fwd_bwd_send_count += 1
         call = self._fwd_bwd_send_count
@@ -7487,6 +7613,11 @@ class CortexTrainingClient:
         Raises:
             ValueError: If a token-ID prompt is too long, or `wait_seconds` isn't a whole number
                 of seconds that's 0 or more.
+            RuntimeError: If you pass `wait_seconds` and the generation fails or is canceled
+                during the wait.
+            ChunkGroupError: If the service rejects the request, which the client sends in several
+                parts when it's large. The error is a `ChunkGroupRestartError` or a
+                `ChunkGroupConflictError`.
         """
         if wait_seconds is not None and (
             isinstance(wait_seconds, bool)
@@ -7621,8 +7752,8 @@ class CortexTrainingClient:
 
         Args:
             job_id: The job to save a checkpoint of.
-            checkpoint_id: A name for the checkpoint. The server assigns the checkpoint's ID, so
-                this value might not be used. Find the ID with `list_checkpoints`.
+            checkpoint_id: Ignored. The service assigns the checkpoint's ID itself and doesn't use
+                a value that you pass. Find the assigned ID with `list_checkpoints`.
             checkpoint_type: `"resumable"`, which holds the training state and weights, or
                 `"weights-only"`, which holds only the model weights. The default is `"resumable"`.
 
@@ -7818,6 +7949,10 @@ class CortexTrainingClient:
 
         Returns:
             The server's response, a dictionary that includes the `request_id`.
+
+        Raises:
+            ChunkGroupConflictError: If the service rejects a large payload that the client sends
+                in several parts. It's a `ChunkGroupError`.
         """
         if isinstance(payload, (bytes, bytearray, memoryview)):
             body = self._post_operation_request_chunks(
@@ -7858,6 +7993,9 @@ class CortexTrainingClient:
 
         Returns:
             The server's response, a dictionary that includes the `request_id`.
+
+        Raises:
+            ChunkGroupConflictError: As for `forward`.
         """
         return self.forward(
             job_id,
@@ -7884,6 +8022,9 @@ class CortexTrainingClient:
 
         Returns:
             The server's response, a dictionary that includes the `request_id`.
+
+        Raises:
+            ChunkGroupConflictError: As for `forward`.
         """
         return self.forward(
             job_id,
@@ -7913,11 +8054,13 @@ class CortexTrainingClient:
         afterward to apply the gradient. Don't run `step` or `load` on the job while this call is
         running.
 
-        The call raises `ValueError` for malformed `data`, a loss that isn't a scalar, or a
-        metric that isn't a number. It raises `RuntimeError` for a loss that doesn't depend on
-        the log-probabilities, a loss or gradient that isn't finite, or a service that doesn't
-        support custom losses yet. Except for the service error, these are raised before the
-        backward pass is sent.
+        The call checks `data`, the loss, and its gradient before it sends the backward pass. It
+        raises `TypeError` for malformed `data`, a loss that isn't a scalar tensor, or a metric
+        that isn't a number. It raises `ValueError` for empty `data`, an item with fewer than 2
+        tokens or no `input_ids`, a loss that doesn't depend on the log-probabilities, or a loss
+        or gradient that isn't finite. It raises `RuntimeError` if the service doesn't support
+        custom losses yet, a request fails, or the forward pass returns log-probabilities that the
+        call can't use.
 
         `loss_fn(data, logprobs)` receives `data` unchanged, and `logprobs`, a list with one float32
         tensor per item. For an item with `input_ids`, its tensor has length `len(input_ids) - 1`,
@@ -7940,9 +8083,15 @@ class CortexTrainingClient:
                 over all predicted tokens.
 
         Raises:
-            ValueError: If `data` is malformed, the loss isn't a scalar, or a metric isn't a number.
-            RuntimeError: If the loss doesn't depend on the log-probabilities, the loss or its
-                gradient isn't finite, or the service doesn't support custom losses yet.
+            TypeError: If `data` or one of its items is malformed, such as a token ID that isn't a
+                non-negative integer, `loss_fn` doesn't return a `(loss, metrics)` tuple, the loss
+                isn't a scalar tensor, or `metrics` isn't a mapping of numbers.
+            ValueError: If `data` is empty, an item has fewer than 2 tokens or is a mapping
+                without `input_ids`, the loss doesn't depend on the log-probabilities, or the loss
+                or its gradient isn't finite.
+            RuntimeError: If a forward or backward request fails, including when the service
+                doesn't support custom losses yet, or the forward pass returns log-probabilities
+                that the call can't use.
         """
         tokens = custom_loss.item_tokens(data)
         logprobs = self._forward_logprobs(job_id, tokens)
@@ -8127,13 +8276,16 @@ class CortexTrainingClient:
             job_id: The job that owns the sampling sub-job.
             sub_job_id: The sampling sub-job to reset.
             sub_job_type: The type of the sub-job to reset. The default is `sampling`.
-            drain: Whether requests that are already running finish before the cache is reset.
-            timeout_s: The time limit for the reset, in seconds.
+            drain: Whether the sub-job stops starting new requests and waits for the running ones
+                to finish before it resets the cache.
+            timeout_s: How long, in seconds, the service keeps retrying a reset that fails. It
+                doesn't limit how long the `drain` wait takes.
             retry_interval_s: How long to wait between attempts to reset the cache, in seconds.
             extra: More fields to send with the call. They override the other options.
 
         Returns:
-            The server's response, a dictionary.
+            The server's response, a dictionary. If the reset still fails after `timeout_s`, the
+                call doesn't raise an error: `reset_ok` in the response is `False`.
         """
         payload = dict(extra or {})
         payload.setdefault("drain", drain)
@@ -8536,7 +8688,8 @@ class CortexTrainingClient:
 
         Args:
             job_id: The job to read logs from.
-            cursor: Where to start reading: the `next_cursor` of the previous page. If you omit it,
+            cursor: Where to start reading: the `next_cursor` of the previous page. If you omit it
+                and set `max_lines`, the page holds the newest `max_lines` lines. If you omit both,
                 reading starts at the beginning of the log.
             max_lines: The most lines to return in the page.
             sub_job_id: The sub-job whose log to read. Pass it, or pass `sub_job_type` when the
@@ -8545,7 +8698,8 @@ class CortexTrainingClient:
 
         Returns:
             A dictionary `{"entries": [...], "next_cursor": ..., "eof": ...}`. Pass `next_cursor`
-                back as `cursor` to continue. `eof` is `True` when the log has ended.
+                back as `cursor` to continue. `eof` is `True` when the log can't grow any more.
+                Older services don't set `eof`, so don't depend on it.
 
         Raises:
             requests.HTTPError: If the request fails, including when the job has ended.
@@ -8708,17 +8862,20 @@ class CortexTrainingClient:
         log. Entries have the same form as in `tail_logs`.
 
         The stream also ends without an error when the log can't grow any more: when the log
-        reports its end, or when the job ends after the stream started reading. If the job had
-        already ended before the first read, the call raises an error. Use `download_stdout_logs`
-        for an ended job's output.
+        reports its end, or when the job ends after the stream started reading. Older services
+        don't report the end of the log. The call returns at once and sends no request until you
+        iterate, so errors surface as you iterate, not on the call. If the job had already ended
+        before the first read, iterating raises an error. Use `download_stdout_logs` for an ended
+        job's output.
 
         Args:
             job_id: The job to read logs from.
             sub_job_id: The sub-job whose log to read. Pass it, or pass `sub_job_type` when the
                 job has only one sub-job of that type.
             sub_job_type: The type of the sub-job whose log to read, `training` or `sampling`.
-            cursor: Where to start reading. If you omit it, reading starts at the beginning of
-                the log.
+            cursor: Where to start reading. If you omit it and set `max_lines`, reading starts at
+                the newest `max_lines` lines. If you omit both, it starts at the beginning of the
+                log.
             max_lines: The most lines to read in each request.
             poll_interval: Seconds to wait before polling again when there are no new entries.
                 The wait grows between polls. If you omit it, the client's `poll_interval`
@@ -8822,6 +8979,8 @@ class CortexTrainingClient:
             sub_job_id: The sub-job to read events for.
             sub_job_type: The type of the sub-job to read events for.
             poll_interval: Seconds to wait before polling again when there are no new events.
+                The wait grows between polls. If you omit it, the client's `poll_interval`
+                applies.
             follow: Whether to keep polling for new events after catching up.
 
         Returns:
