@@ -3558,6 +3558,9 @@ class CortexTrainingClient:
 
         ``role`` is the session's role, which only the schema-not-found
         explanation names; it is read only for that answer.
+
+        Returns:
+            The request context for ``errors.EXPLANATIONS``.
         """
         provider = self._auth_provider
         return _errors.RequestContext(
@@ -3577,6 +3580,9 @@ class CortexTrainingClient:
         It keeps ``exc``'s message, which :meth:`_explain_http_error` ended
         with the service's code and message and the explanation, and its
         ``errors.SERVER_ERROR_ATTRIBUTES``. ``role`` is the session's role.
+
+        Returns:
+            The error to raise instead of ``exc``.
         """
         database, schema = self.database, self.schema
         create_database, create_schema = _errors.schema_statements(database, schema)
@@ -3608,6 +3614,9 @@ class CortexTrainingClient:
         found and ``explain_database`` holds; without it, that answer gets no
         explanation, since the path's database is not the client's. Never
         raises, so it cannot replace the error it explains.
+
+        Returns:
+            The :class:`DatabaseAccessError` to raise instead, or ``None``.
         """
         try:
             error = _errors.read_server_error(response)
