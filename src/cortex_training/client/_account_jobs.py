@@ -29,6 +29,11 @@ from typing import Any
 
 import requests
 
+__all__ = [
+    "AccountJobListUnavailable",
+    "InvalidPageToken",
+]
+
 # The service's message when the route is deployed but not enabled for the
 # account. Any other 404 means the route is missing; the service sends those
 # with an empty body.
@@ -95,6 +100,9 @@ def page_error(
     """The typed error for a failed page, or None when the answer is not one of them.
 
     ``messages`` are the ``message`` strings found in the answer's JSON body.
+
+    Returns:
+        The error, or `None`.
     """
     reason = _unavailable_reason(response.status_code, messages)
     if reason is not None:

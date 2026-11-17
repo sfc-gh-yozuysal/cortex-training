@@ -189,6 +189,33 @@ _JITTER_START = "multiplier" if "multiplier" in inspect.signature(wait_exponenti
 
 logger = logging.getLogger(__name__)
 
+# What the client package re-exports; Ruff reads it to tell public API from internal code.
+__all__ = [
+    "DEBUG_OPTIONS_ENV",
+    "DISABLE_TELEMETRY_ENV",
+    "DISABLE_TENSOR_PROMPTS_ENV",
+    "ENABLE_SUCCESS_TELEMETRY_ENV",
+    "CLI_SURFACE",
+    "SDK_SURFACE",
+    "SURFACE_ATTRIBUTE",
+    "TUI_SURFACE",
+    "ChunkGroupConflictError",
+    "ChunkGroupError",
+    "ChunkGroupRestartError",
+    "CortexTrainingClient",
+    "DatabaseAccessError",
+    "GenerateHandle",
+    "Hardware",
+    "InferenceConfig",
+    "JobType",
+    "SubJobConfig",
+    "TrainingConfig",
+    "build_forward_backward_kwargs",
+    "build_forward_backward_payload",
+    "create_job_body_from_job",
+    "serialize_forward_backward_args",
+]
+
 _STDOUT_CHUNK_RE = re.compile(
     r"^console\.(?P<timestamp>\d{8}-\d{6})\.(?P<suffix>[^./\\]+)\.gz$"
 )
@@ -284,6 +311,9 @@ def _success_telemetry_enabled(
     operation and surface; unset, the operations in ``_SUCCESS_TELEMETRY_BY_DEFAULT``
     emit successes, and so does every operation of a client whose surface is in
     ``_SUCCESS_TELEMETRY_SURFACES``.
+
+    Returns:
+        Whether to emit this outcome.
     """
     if os.environ.get(ENABLE_SUCCESS_TELEMETRY_ENV, "").strip():
         return _env_flag_enabled(ENABLE_SUCCESS_TELEMETRY_ENV)
@@ -307,6 +337,9 @@ def _expected_failure(
     failure. Expected failures still report ``success`` false, with ``expected``
     true, and are counted under the ``expected_failure`` outcome, so failure
     rates leave them out.
+
+    Returns:
+        True for an expected failure, false for a real one.
     """
     if isinstance(error, NoChunksError):
         return True
@@ -418,6 +451,9 @@ def _operation_body_json_bytes(body: dict) -> int:
     string. The base64 alphabet needs no JSON escaping and is single-byte in
     UTF-8, so the payload's encoded length is its character count: measure the
     envelope around an empty placeholder and add that count back.
+
+    Returns:
+        The size in bytes.
     """
     payload = body.get("payload")
     raw = payload.get("payload_b64") if isinstance(payload, dict) else None
@@ -449,6 +485,13 @@ class ChunkGroupError(requests.exceptions.HTTPError):
     """
 
     def __init__(self, message: str, *, response: requests.Response, detail: dict):
+        """Create the error.
+
+        Args:
+            message: The error message.
+            response: The response that reported the failure.
+            detail: The details of the failure.
+        """
         super().__init__(
             message,
             response=response,
@@ -492,6 +535,16 @@ class DatabaseAccessError(requests.exceptions.HTTPError, RuntimeError):
         role: str | None,
         statement: str,
     ):
+        """Create the error.
+
+        Args:
+            message: The error message.
+            response: The response that reported the failure.
+            kind: The kind of object that wasn't found.
+            name: The name that wasn't found.
+            role: The role of the session, or `None` when it can't be determined.
+            statement: The statements that would set it up.
+        """
         super().__init__(message, response=response, request=getattr(response, "request", None))
         self.kind = kind
         self.name = name
@@ -611,6 +664,9 @@ def _is_transient_unless_job_not_found(exc: BaseException) -> bool:
 
     404 stays retryable in general because routing can briefly return it for a
     job that exists; only the explicit job-not-found error code stops retries.
+
+    Returns:
+        Whether to retry.
     """
     if isinstance(exc, requests.exceptions.HTTPError) and _is_job_not_found_response(
         exc.response
@@ -777,6 +833,9 @@ def _snowflake_request_attributes(
     that response carried the header. ``snowflake.request_ids`` is the
     operation's recent Snowflake request ids, newest last; no entry in it is
     implied to have failed.
+
+    Returns:
+        The attributes to record.
     """
     attributes: dict[str, Any] = {}
     if error is not None:
@@ -801,6 +860,9 @@ def _server_failure(exc: _E, failed: bool = True) -> _E:
     out, a response payload that could not be decoded) carry no response of
     their own, so :func:`_log_untagged_request_id` names the operation's last
     Snowflake request id for them.
+
+    Returns:
+        `exc`, marked when `failed` is true.
     """
     if failed:
         try:
@@ -1051,14 +1113,19 @@ _WAITING_GENERATE_RETRY_STATUSES = frozenset({429, 404, 409, 307, 308})
 
 
 def _is_waiting_generate_retryable(exc: BaseException) -> bool:
-    """Retry a waiting generate only on failures that come before it starts:
-    a connection that was never opened (not a TLS failure), or a status above.
+    """Whether a waiting generate may be retried after this failure.
+
+    Only failures that come before it starts qualify: a connection that was never opened
+    (not a TLS failure), or a status above.
 
     A read timeout, a reset after send, or any 5xx is raised rather than resent:
     the service may already be generating, and a gateway can answer 503 or 504
     after the backend accepted the call. A job-not-found 404 is final, except
     within the 120 s grace for a job this client just created (see
     ``_definitive_not_found``).
+
+    Returns:
+        True when the failure may be retried.
     """
     if isinstance(exc, requests.exceptions.HTTPError):
         resp = exc.response
@@ -1188,10 +1255,15 @@ def _capacity_breakdown_dimensions(dimensions: Any) -> tuple[str, ...]:
 def _capacity_breakdown(
     body: Mapping[str, Any], dimensions: tuple[str, ...]
 ) -> dict[str, Any]:
-    """Normalize ``breakdown``, trusting the data over the status label:
-    groups are kept whenever the server sends them, and ``status`` is passed
+    """Normalize ``breakdown``, trusting the data over the status label.
+
+    Groups are kept whenever the server sends them, and ``status`` is passed
     through as sent. Only a missing status is derived: ``OK`` with groups,
-    ``UNAVAILABLE`` without (also for a dimension the server left out)."""
+    ``UNAVAILABLE`` without (also for a dimension the server left out).
+
+    Returns:
+        The normalized breakdown.
+    """
     raw = body.get("breakdown")
     if not isinstance(raw, dict):
         raw = {}
@@ -1718,10 +1790,15 @@ _SUB_JOB_SERVICE_FIELDS = frozenset({"sub_job_id", "status"})
 
 
 def _whole_numbers_as_ints(value: Any) -> Any:
-    """``value`` with each whole float as an int. Until the service reports a
-    sub-job's effective config it returns the submitted one with every number a
-    float (``"n_gpus": 4.0``), and a LoRA ``r`` of ``8.0`` fails ``peft_config``
-    validation."""
+    """``value`` with each whole float as an int.
+
+    Until the service reports a sub-job's effective config it returns the submitted
+    one with every number a float (``"n_gpus": 4.0``), and a LoRA ``r`` of ``8.0``
+    fails ``peft_config`` validation.
+
+    Returns:
+        The value with whole floats as ints, in the same shape.
+    """
     if isinstance(value, float) and value.is_integer():
         return int(value)
     if isinstance(value, Mapping):
@@ -2052,6 +2129,9 @@ def _model_deployment_description(
     It is a read view: it may gain read-only fields, and it is not guaranteed
     to be accepted by ``create``. Status, endpoint, scope, and ownership stay
     at the top level.
+
+    Returns:
+        The reshaped metadata.
     """
     result: dict[str, Any] = {
         key: metadata[key]
@@ -2166,6 +2246,9 @@ def _model_deployment_operation(method):
     job ID is replaced by the deployment ID in request log lines, and any HTTP
     error is turned into :func:`_sanitized_model_deployment_request_error`.
     Errors that are not HTTP errors (e.g. local filesystem errors) pass through.
+
+    Returns:
+        The wrapped method.
     """
 
     @functools.wraps(method)
@@ -2566,6 +2649,9 @@ def _as_token_tensor(prompt: list[int]):
     vocabulary of over two billion, so this should never fire -- but torch
     raises on overflow instead of wrapping, and turning a working request into
     an exception is a worse trade than sending a larger frame.
+
+    Returns:
+        A tensor of the prompt.
     """
     torch = _load_torch()
     try:
@@ -2603,6 +2689,9 @@ def _pack_token_prompts(prompts):
     them. Empty lists are left alone so the server's own non-empty check is
     the one that rejects them, rather than this becoming a second, differently
     worded validation.
+
+    Returns:
+        `prompts` with each non-empty token-id list replaced by a tensor.
     """
     if _tensor_prompts_disabled():
         return prompts
@@ -2637,6 +2726,9 @@ def _artifact_login_options() -> dict[str, Any]:
     a fraction of a second to over two seconds to each login. A timeout of zero
     skips the probes (Connector 3.17.2 and later); the login itself is
     unchanged. A Connector without the option is left as it is.
+
+    Returns:
+        The options to pass when connecting.
     """
     try:
         from snowflake.connector.connection import DEFAULT_CONFIGURATION
@@ -2667,6 +2759,9 @@ def _created_param(value: date | datetime | str | None) -> str | None:
     A ``datetime`` becomes UTC RFC 3339 (a naive one is taken as UTC), a
     ``date`` stays ``YYYY-MM-DD`` (UTC midnight on the server), and a string is
     sent as given.
+
+    Returns:
+        The query parameter value, or `None` when `value` is `None`.
     """
     if isinstance(value, datetime):
         if value.tzinfo is None:
@@ -2707,6 +2802,9 @@ def _sub_job_id_params(sub_job_id: str | None) -> dict[str, dict[str, str]]:
 
     The key is omitted rather than sent empty so a request without a sub_job_id is
     byte-identical to one from a client that predates the parameter.
+
+    Returns:
+        Keyword arguments for the request: `{"params": ...}`, or `{}` when unset.
     """
     return {"params": {"sub_job_id": sub_job_id}} if sub_job_id else {}
 
@@ -2769,6 +2867,10 @@ class CortexTrainingClient:
                 tried again after the first attempt. Must be at least 0.
             request_timeout: Seconds to wait for a response, or a `(connect, read)`
                 pair of seconds. The default is `(30.0, 600.0)`.
+
+        Raises:
+            ValueError: If `poll_interval`, `poll_timeout`, `poll_backoff_multiplier`,
+                `poll_max_interval`, `pool_maxsize`, or `max_retries` is outside the range described above.
         """
         if poll_interval <= 0:
             raise ValueError("poll_interval must be > 0")
@@ -2939,6 +3041,12 @@ class CortexTrainingClient:
         """Create the client a :class:`~cortex_training._picker.Resolution` describes.
 
         For callers that resolve first and show the target, such as the CLI.
+
+        Returns:
+            The client.
+
+        Raises:
+            SnowflakeProfileError: If signing in with the profile fails. The message adds why that profile was used.
         """
         from cortex_training import _picker
 
@@ -3011,6 +3119,9 @@ class CortexTrainingClient:
         ``X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN`` header
         on every request. No login round-trip. ``telemetry_surface`` is the
         program making the calls (``client.surface``), when it isn't the SDK.
+
+        Returns:
+            The client.
         """
         client = cls(
             base_url=f"https://{rest_host(host)}",
@@ -3062,6 +3173,12 @@ class CortexTrainingClient:
         if the API reports token expiry. ``telemetry_surface`` is the program
         making the calls (``client.surface``), when it isn't the SDK; it is set
         here so the login the client is built with is reported with it.
+
+        Returns:
+            The client.
+
+        Raises:
+            ValueError: If neither the profile nor `database` names a database.
         """
         auth = SnowflakeProfileAuth(connection_name)
         resolved_database = database or auth.database
@@ -3307,6 +3424,9 @@ class CortexTrainingClient:
 
         Write numbers, booleans, and short fixed strings only. Outside a
         tracked operation this returns a dict nobody reads.
+
+        Returns:
+            The values dictionary to write into.
         """
         state = getattr(self, "_operation_metric_state", None)
         values = getattr(state, "values", None) if state is not None else None
@@ -3405,6 +3525,9 @@ class CortexTrainingClient:
         Profile clients read it from their Connector session, which Snowflake
         fills at sign-in, even when the profile sets no role. PAT clients have
         no session, so their role can't be determined.
+
+        Returns:
+            The role, or `None` when it can't be determined.
         """
         if self._auth_provider is None:
             return None
@@ -3525,6 +3648,9 @@ class CortexTrainingClient:
         :class:`DatabaseAccessError` instead. ``explain_database=False`` leaves
         that answer as it is, for routes whose path names no database; a
         client from :meth:`for_job` always leaves it.
+
+        Returns:
+            The successful response.
         """
         explain_database = explain_database and self._explain_database_errors
         fn = getattr(self._session, method.lower())
@@ -3684,8 +3810,10 @@ class CortexTrainingClient:
         return retryer(attempt)
 
     def _note_created_job(self, job: Any, body: Any = None) -> None:
-        """Remember a job this client just created; never raises, so it cannot
-        hide a create that succeeded."""
+        """Remember a job this client just created.
+
+        It never raises, so it cannot hide a create that succeeded.
+        """
         try:
             job_id = job.get("job_id") if isinstance(job, dict) else None
             if not (isinstance(job_id, str) and job_id) and isinstance(body, dict):
@@ -3707,6 +3835,9 @@ class CortexTrainingClient:
         The service names a missing job with code 517601. That answer is final,
         except for a job this client created within ``_RECENTLY_CREATED_SECONDS``,
         which may not be visible yet.
+
+        Returns:
+            True when the job is known not to exist.
         """
         if not isinstance(exc, requests.exceptions.HTTPError):
             return False
@@ -3822,6 +3953,11 @@ class CortexTrainingClient:
 
         Returns:
             The server's response, which includes the new job's `job_id`.
+
+        Raises:
+            ValueError: If `body` isn't a dictionary with a non-empty `sub_job_configs` list, a sub-job
+                config isn't valid, or the job has more than one `training` sub-job or any
+                `log_probability` sub-job.
         """
         if not isinstance(body, dict):
             raise ValueError("create_job_from_body requires a JSON object")
@@ -3885,7 +4021,8 @@ class CortexTrainingClient:
                 )
             response = self.create_job_from_body(spec._to_create_job_body())
         except requests.exceptions.RequestException as exc:
-            raise _sanitized_model_deployment_request_error(exc, None) from exc
+            sanitized = _sanitized_model_deployment_request_error(exc, None)
+            raise sanitized from exc
         deployment_id = _deployment_id_from_job_id(response.get(JOB_FIELD_JOB_ID))
         return _pending_model_deployment_metadata(
             spec, deployment_id, self.model_deployment_base_url
@@ -3897,6 +4034,9 @@ class CortexTrainingClient:
         The server requires ``model_name`` on the deployment's sampling sub-job
         and rejects one that differs from the source job's, so it is read from
         the source job rather than asked of the user.
+
+        Raises:
+            ValueError: If the source job has no training sub-job with a model name.
         """
         job = self.get_job(job_id, _retry_on=_is_transient_unless_job_not_found)
         for sub_job in job.get("sub_jobs") or ():
@@ -3918,6 +4058,9 @@ class CortexTrainingClient:
         a name. Tolerating it keeps :meth:`wait_for_job` polling — an unknown
         status is neither ``running`` nor terminal, so it stays in-progress —
         instead of crashing on ``int.lower()``.
+
+        Returns:
+            The short, lower-case status.
         """
         return str(status or "").lower().removeprefix("job_state_")
 
@@ -3957,14 +4100,16 @@ class CortexTrainingClient:
                 return job
             if status in _ENDED_JOB_STATES:
                 reason = job.get("reason", "")
-                raise _server_failure(
+                ended = _server_failure(
                     RuntimeError(f"Job {job_id} reached terminal state '{status}': {reason}"),
                     failed=status == "failed",
                 )
+                raise ended
             delay = self._sleep_with_backoff(delay, deadline)
-        raise _server_failure(
+        timed_out = _server_failure(
             TimeoutError(f"Job {job_id} did not become running within {self.poll_timeout}s")
         )
+        raise timed_out
 
     @_track_operation("get_job")
     def get_job(
@@ -4032,6 +4177,12 @@ class CortexTrainingClient:
         The server's job-not-found 404 is raised on the first attempt instead of
         being retried like a transient routing 404, so a mistyped or dropped ID
         fails fast.
+
+        Returns:
+            The job.
+
+        Raises:
+            ValueError: If the job is not a model deployment.
         """
         job = self.get_job(job_id, _retry_on=_is_transient_unless_job_not_found)
         if _model_deployment_sub_job(job) is None:
@@ -4139,11 +4290,12 @@ class CortexTrainingClient:
             if deployment_status == DEPLOYMENT_STATUS_READY:
                 return metadata
             if deployment_status == DEPLOYMENT_STATUS_DROPPED:
-                raise ModelDeploymentWaitError(
+                dropped = ModelDeploymentWaitError(
                     f"model deployment {deployment_id} was dropped; create a new "
                     "deployment to serve this model again",
                     metadata,
                 )
+                raise dropped
             if deployment_status in {DEPLOYMENT_STATUS_FAILED, DEPLOYMENT_STATUS_TERMINATED}:
                 failure = metadata.get(OUT_FAILURE, {})
                 message = f"model deployment {deployment_id} is {deployment_status}"
@@ -4155,10 +4307,11 @@ class CortexTrainingClient:
                     "; for details run `cortex-training model-deployment download-log "
                     f"{deployment_id}`"
                 )
-                raise ModelDeploymentWaitError(message, metadata)
+                failed = ModelDeploymentWaitError(message, metadata)
+                raise failed
             delay = self._sleep_with_backoff(delay, deadline)
         last_status = metadata[OUT_STATUS] if metadata else DEPLOYMENT_STATUS_UNKNOWN
-        raise ModelDeploymentWaitTimeout(
+        timed_out = ModelDeploymentWaitTimeout(
             f"model deployment {deployment_id} did not become READY within "
             f"{self.poll_timeout:g}s (last status: {last_status}). It is still "
             "running and holding GPUs: run `cortex-training model-deployment wait "
@@ -4166,6 +4319,7 @@ class CortexTrainingClient:
             f"{deployment_id}` to release them",
             metadata,
         )
+        raise timed_out
 
     @_model_deployment_operation
     def drop_model_deployment(self, deployment_id: str) -> dict[str, Any]:
@@ -4182,11 +4336,14 @@ class CortexTrainingClient:
         Returns:
             A dictionary with the `deployment` ID and `dropped`, which is `True` when the
                 deployment is dropped or being dropped.
+
+        Raises:
+            requests.HTTPError: If a request fails, other than for a deployment that no longer exists.
         """
         job_id = _job_id_from_deployment_id(deployment_id)
         try:
             job = self._get_model_deployment_job(job_id)
-        except requests.exceptions.HTTPError as exc:
+        except requests.HTTPError as exc:
             if _is_job_not_found_response(exc.response):
                 return {OUT_DEPLOYMENT: deployment_id, OUT_DROPPED: True}
             raise
@@ -4230,8 +4387,9 @@ class CortexTrainingClient:
             page_size: Jobs per page, from 1 to 1,000. A page can hold fewer jobs than this, or
                 none.
 
-        Yields:
-            Jobs, each a dictionary as `get_job` returns, plus `database_name` and `schema_name`.
+        Returns:
+            An iterator of jobs, each a dictionary as `get_job` returns, plus `database_name` and
+                `schema_name`.
 
         Raises:
             ValueError: If `page_size` is out of range, or you pass `schema` without `database`.
@@ -4587,6 +4745,9 @@ class CortexTrainingClient:
         A job's experiment run never changes, so it is read once for a client and every client
         :meth:`for_job` makes from it, which share what they read. The newest
         ``_EXPERIMENT_RUNS_KEPT`` jobs' are remembered; an older one is read again when asked for.
+
+        Raises:
+            ValueError: If the response lacks a valid experiment or run name.
         """
         with self._experiment_runs_lock:
             known = self._experiment_runs.get(job_id)
@@ -4643,6 +4804,12 @@ class CortexTrainingClient:
         A PAT client's login is reported here as a ``connect`` outcome; a
         profile client's factory is its :class:`SnowflakeProfileAuth`, which
         reports its own (see :meth:`_record_connect`).
+
+        Returns:
+            The connection.
+
+        Raises:
+            RuntimeError: If the client has no way to sign in to Snowflake.
         """
         if self._artifact_connection_factory is not None:
             return self._artifact_connection_factory()
@@ -4722,13 +4889,20 @@ class CortexTrainingClient:
         *,
         within: str | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Map each safe run-relative path below ``artifact_root`` to what LIST
-        reported about it: ``size``, ``md5`` and ``last_modified`` (``None``
+        """Map each safe run-relative path below ``artifact_root`` to what LIST reported.
+
+        Each value holds ``size``, ``md5`` and ``last_modified`` (``None``
         when a column is missing).
 
         A file outside ``artifact_root`` is an error, unless ``within`` (an
         ancestor of ``artifact_root``) is given and holds it: such a file is left
         out, as from a LIST that matched ``artifact_root`` without its final ``/``.
+
+        Returns:
+            The listed files, by relative path.
+
+        Raises:
+            ValueError: If a listed file is outside ``artifact_root`` and ``within`` does not hold it.
         """
         root = artifact_root.strip("/") + "/"
         _validate_artifact_relative_path(root.removesuffix("/"))
@@ -4973,6 +5147,12 @@ class CortexTrainingClient:
             A list with one dictionary per file, with `sub_job_id`, `filename`, `artifact_uri`,
                 `saved_path`, `bytes`, and `unchanged`. `unchanged` is `True` when `resume` kept the
                 saved copy.
+
+        Raises:
+            TypeError: If `sub_job_ids` is a single string.
+            ValueError: If `sub_job_ids` is empty, or `transfer_timeout_seconds` isn't a positive number
+                or `None`.
+            NoChunksError: If a sub-job named in `sub_job_ids` has no execution logs.
         """
         # Before the argument checks, so a call they refuse still sends these fields.
         values = self._operation_values()
@@ -5084,8 +5264,14 @@ class CortexTrainingClient:
         resume: bool,
         progress: Callable[[str], None] | None,
     ) -> dict[str, Any]:
-        """``filename`` is the path below the sub-job's log directory, which may
-        include subdirectories (``ray/worker.log``)."""
+        """Save one execution log file, or keep the copy already saved.
+
+        ``filename`` is the path below the sub-job's log directory, which may
+        include subdirectories (``ray/worker.log``).
+
+        Returns:
+            The result entry for the file, with its size and whether it was ``unchanged``.
+        """
         artifact_uri = run_uri + relative_path
         manifest_path = destination.with_name("." + destination.name + ".artifact.json")
         identity = self._execution_log_identity(listed, artifact_uri)
@@ -5252,6 +5438,9 @@ class CortexTrainingClient:
 
         Only reads the output directory; :meth:`_prepare_gzip_plan` makes the
         changes once that sub-job's turn to be written comes.
+
+        Returns:
+            The plan for the sub-job.
         """
         partial, partial_manifest = self._partial_paths(destination)
         manifest = self._resume_manifest_path(destination)
@@ -5339,6 +5528,9 @@ class CortexTrainingClient:
 
         A chunk removed after the listing is skipped. One that will not
         decompress is fetched once more, then skipped. ``strict`` raises instead.
+
+        Raises:
+            CORRUPT_CHUNK_ERRORS: In ``strict`` mode, for a chunk that will not decompress.
         """
         uri = run_uri + relative_path
 
@@ -5416,7 +5608,7 @@ class CortexTrainingClient:
     def _artifact_progress_line(
         self, progress: Callable[[str], None] | None
     ) -> Iterator[None]:
-        """Close the status line with ``"\\n"`` whether the body succeeds or fails.
+        r"""Close the status line with ``"\n"`` whether the body succeeds or fails.
 
         On failure the download error wins over any error from the newline.
         """
@@ -5434,8 +5626,14 @@ class CortexTrainingClient:
     def _preview_paths(
         cls, plan: _artifact_download.GzipPlan, chunk_pattern: re.Pattern[str], seconds: float
     ) -> list[str]:
-        """``plan``'s new chunks from ``seconds`` before its newest one, or ``[]`` when they
-        are most of what is new: fetching them first would then save no time."""
+        """Choose the chunks to preview: ``plan``'s newest, from ``seconds`` before the last.
+
+        The result is ``[]`` when they are most of what is new: fetching them
+        first would then save no time.
+
+        Returns:
+            The chunk paths to preview, or an empty list.
+        """
         new = plan.new_paths
         newest = cls._chunk_time(chunk_pattern, new[-1]) if new else None
         if newest is None:
@@ -5461,15 +5659,18 @@ class CortexTrainingClient:
         *,
         futures: list[Future[Path]],
     ) -> dict[str, Future[Path]]:
-        """Fetch ``chunk_paths`` (a sub-job's newest chunks, in time order) and call
-        ``on_preview`` with their rows as one file; return the fetches to reuse.
+        """Fetch a sub-job's newest chunks and pass their rows to ``on_preview`` as one file.
 
+        ``chunk_paths`` are in time order, and the fetches are returned to reuse.
         ``on_preview`` gets ``sub_job_id``, ``path``, ``chunk_count``,
         ``first_artifact_uri`` and ``last_artifact_uri``; the file at ``path`` holds
         the chunks' rows in time order and is removed once it returns. A chunk that
         can't be fetched or decompressed is left out, and the download fetches it
         again in its turn; with none left there is no preview. ``futures`` gets
         every fetch, so a download that fails can wait for them before cleaning up.
+
+        Returns:
+            The fetches the download can reuse, by chunk path.
         """
         mine = [
             pool.submit(self._fetch_artifact_chunk, shared, run_uri, path, spool_root, cancel)
@@ -5537,7 +5738,7 @@ class CortexTrainingClient:
         on_commit: Callable[[dict[str, Any]], None] | None = None,
         preview: tuple[str, list[str], Callable[[dict[str, Any]], None]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch every new chunk concurrently and append them in plan order.
+        r"""Fetch every new chunk concurrently and append them in plan order.
 
         Fetches run ahead of the writer across sub-job boundaries, up to a
         bounded window, so a short sub-job never leaves workers idle.
@@ -5545,7 +5746,7 @@ class CortexTrainingClient:
 
         For each sub-job, ``progress`` gets a status line before anything in
         the output directory changes, an update after each appended chunk, and
-        ``"\\n"`` once the manifest is written or the sub-job fails; a sub-job
+        ``"\n"`` once the manifest is written or the sub-job fails; a sub-job
         with nothing new gets one line ending in a newline instead.
         ``on_chunk`` gets ``(sub_job_id, done, total, bytes)`` counts, with
         ``done == total`` only after the file is committed. ``on_commit`` then
@@ -5555,6 +5756,9 @@ class CortexTrainingClient:
         fetched before anything else and handed to the callback as one file
         (see :meth:`_write_preview`), then written in their turn without being
         fetched again.
+
+        Returns:
+            The result entries, in plan order.
         """
         work = [path for plan in plans for path in plan.new_paths]
         window = max_workers * self._DOWNLOAD_WINDOW_PER_WORKER
@@ -5747,6 +5951,9 @@ class CortexTrainingClient:
         so is one with characters _SCOPED_LIST_SUB_JOB_RE leaves out. The id is
         returned as a plain ``str``: a subclass's (such as a ``str`` Enum member's)
         own formatting would name another directory.
+
+        Returns:
+            A list of at most one sub-job id, or `None`.
         """
         if sub_job_ids is None:
             return None
@@ -5782,8 +5989,11 @@ class CortexTrainingClient:
     def _note_artifact_roots(
         self, run_uri: str, job_id: str, stream: str, by_root: Mapping[str, Mapping[str, Any]]
     ) -> None:
-        """Remember each sub-job's root from a listing of both: the one holding its chunks of the
-        stream, if just one does. One with chunks under both is listed under both from then on."""
+        """Remember each sub-job's root from a listing of both.
+
+        The root is the one holding its chunks of the stream, if just one does. A
+        sub-job with chunks under both is listed under both from then on.
+        """
         now = time.monotonic()
         with self._artifact_roots_lock:
             seen = self._artifact_roots_seen
@@ -6005,6 +6215,9 @@ class CortexTrainingClient:
         ``warn_if_stalled`` false skips the first sign: a stream written only
         when the job is asked to do something goes quiet whenever it isn't. The
         warning for a job that ended moments ago is still given.
+
+        Returns:
+            The warnings, by sub-job id.
         """
         if stale_after_seconds is None:
             return {}
@@ -6224,6 +6437,14 @@ class CortexTrainingClient:
         when the job is asked to do something. ``skip_missing`` true leaves out a
         sub-job named in ``sub_job_ids`` that has no chunks instead of raising
         :class:`NoChunksError`, for a stream only some sub-jobs write.
+
+        Returns:
+            The result entries, in sub-job ID order.
+
+        Raises:
+            TypeError: If ``sub_job_ids`` or ``priority`` is a single string.
+            ValueError: If an option is out of range, or ``sub_job_ids`` is empty.
+            NoChunksError: If a sub-job in ``sub_job_ids`` has nothing to download.
         """
         if (preview_seconds is None) != (on_preview is None):
             raise ValueError("preview_seconds and on_preview are given together")
@@ -6745,6 +6966,7 @@ class CortexTrainingClient:
 
         Raises:
             ValueError: If `log_type` isn't `"execution"` or `"stdout"`.
+            RuntimeError: If a downloaded file is missing from disk.
         """
         if log_type not in {"execution", "stdout"}:
             raise ValueError("log_type must be either 'execution' or 'stdout'")
@@ -6802,6 +7024,9 @@ class CortexTrainingClient:
         Returns:
             A dictionary `{"deployment": ..., "metrics": [...]}`. `metrics` lists each saved
                 file's `filename`, `saved_path`, and `chunk_count`.
+
+        Raises:
+            RuntimeError: If a downloaded file is missing from disk.
         """
         job_id = _job_id_from_deployment_id(deployment_id)
         # Refuse IDs whose backing job is not a model deployment.
@@ -6862,6 +7087,9 @@ class CortexTrainingClient:
         paying the JSON encoding for every token.
 
         ``op`` only names the caller in the length-check error message.
+
+        Returns:
+            The encoded frame.
         """
         self._check_prompt_lengths(op, job_id, prompts, sub_job_id)
         # Packed after validation so the check above still reads plain lists,
@@ -6966,6 +7194,9 @@ class CortexTrainingClient:
         token ids, and matching on ``list`` alone let one through unchecked --
         silently trading a clear client-side error for vLLM's much later
         ``maximum model length`` failure.
+
+        Raises:
+            ValueError: If a pre-tokenized prompt is too long for the sampling window.
         """
         torch = _load_torch()
 
@@ -7447,6 +7678,12 @@ class CortexTrainingClient:
         ``max_json_bytes``, when set, fails fast if the encoded body exceeds it.
         ``retry_on`` overrides the retry predicate when passed; chunk posts use
         one that excludes structured chunk-group conflicts.
+
+        Returns:
+            The decoded JSON response.
+
+        Raises:
+            ValueError: If the encoded body exceeds ``max_json_bytes``.
         """
         body: dict = {"operation_type": operation_type}
         if sub_job_id is not None:
@@ -7977,6 +8214,12 @@ class CortexTrainingClient:
         A current backend returns a self-describing envelope that
         :meth:`_decode_result_body` already handles. An older backend
         returns ``{"job_id", "payload_b64"}`` with no ``wire_format``.
+
+        Returns:
+            The decoded payload, or `None`.
+
+        Raises:
+            RuntimeError: If the blob does not decode to a dictionary.
         """
         if request_id not in self._forward_request_ids:
             return None
@@ -8022,8 +8265,10 @@ class CortexTrainingClient:
 
     def _remember_training_log_op(self, request_id: str, job_id: str, op: str,
                                   target_sub_job_id: str | None = None) -> None:
-        """Note a submitted request for :meth:`_log_training_result`. Never raises: the request is
-        already accepted, and its caller must get its id back."""
+        """Note a submitted request for :meth:`_log_training_result`.
+
+        It never raises: the request is already accepted, and its caller must get its id back.
+        """
         if self._training_log is None:
             return
         try:
@@ -8070,6 +8315,9 @@ class CortexTrainingClient:
         :meth:`poll_request` and a waited :meth:`generate` both go through
         here, so their results are decoded and recorded identically. The raised
         error exposes the request's ``request_id``.
+
+        Returns:
+            The decoded result.
         """
         if state in _SUCCEEDED_REQUEST_STATES:
             # ``payload`` is the result as the sub-job returned it, for the local
@@ -8115,7 +8363,8 @@ class CortexTrainingClient:
         self._forward_request_ids.discard(request_id)
         exc = RuntimeError(f"Request {request_id} ended with state '{state}': {error}")
         exc.request_id = request_id  # type: ignore[attr-defined]  # read by the outcome metric
-        raise _server_failure(exc, failed=state == "failed")
+        failure = _server_failure(exc, failed=state == "failed")
+        raise failure
 
     @_track_operation("poll_request")
     def poll_request(self, job_id: str, request_id: str) -> dict:
@@ -8173,9 +8422,10 @@ class CortexTrainingClient:
             self._fwd_bwd_request_debug.pop(request_id, None)
         self._generate_request_ids.discard(request_id)
         self._forward_request_ids.discard(request_id)
-        raise _server_failure(
+        timed_out = _server_failure(
             TimeoutError(f"Request {request_id} did not complete within {self.poll_timeout}s")
         )
+        raise timed_out
 
     @_track_operation("get_request_status")
     def get_request_status(
@@ -8299,7 +8549,7 @@ class CortexTrainingClient:
                 sub_job_type=sub_job_type,
                 retry_on=retry_on,
             )
-        except requests.exceptions.HTTPError as exc:
+        except requests.HTTPError as exc:
             hint = self._tail_hint(exc, job_id, sub_job_id, checked)
             if checked.get("status"):
                 # Tells a tail that failed as the job started or ended from one that failed
@@ -8342,6 +8592,9 @@ class CortexTrainingClient:
         it has ended, its live logs are gone; if ``sub_job_id`` is not one of its
         sub-jobs, it never had any. Otherwise (for example, a job still starting)
         the error stays retryable.
+
+        Returns:
+            The hint, or `None` when the failure may be retried.
         """
         if not isinstance(exc, requests.exceptions.HTTPError):
             return None
@@ -8389,10 +8642,15 @@ class CortexTrainingClient:
         poll_interval: float | None = None,
         stop_at_eof: bool = False,
     ) -> Iterator[dict]:
-        """Drive a cursor-paged tail: call ``fetch(cursor)`` for a page, yield
-        its entries (under ``entries_key``), advance the cursor, and poll with
-        backoff. With ``follow`` False, stop at the first empty page; with
-        ``stop_at_eof``, also stop at an empty page that reports ``eof``.
+        """Drive a cursor-paged tail.
+
+        Call ``fetch(cursor)`` for a page, yield its entries (under ``entries_key``),
+        advance the cursor, and poll with backoff. With ``follow`` False, stop at the
+        first empty page; with ``stop_at_eof``, also stop at an empty page that
+        reports ``eof``.
+
+        Yields:
+            The entries of each page.
         """
         base_delay = poll_interval or self.poll_interval
         delay = base_delay
@@ -8447,8 +8705,8 @@ class CortexTrainingClient:
                 applies.
             follow: Whether to keep polling for new entries after catching up with the log.
 
-        Yields:
-            Log entries, each a dictionary.
+        Returns:
+            An iterator of log entries, each a dictionary.
         """
         read_once = False
 
@@ -8546,8 +8804,8 @@ class CortexTrainingClient:
             poll_interval: Seconds to wait before polling again when there are no new events.
             follow: Whether to keep polling for new events after catching up.
 
-        Yields:
-            Events, each a dictionary.
+        Returns:
+            An iterator of events, each a dictionary.
         """
         return self._stream_pages(
             lambda cur: self.tail_events(

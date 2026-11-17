@@ -26,6 +26,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+__all__ = [
+    "ModelDeploymentSpec",
+]
+
 # Only EVALUATION deployments are supported today.
 MODEL_DEPLOYMENT_CLASS = "EVALUATION"
 # Public deployment IDs are sf-ct-<backing job UUID>.
@@ -178,6 +182,12 @@ def _strict_object(
     """Require ``value`` to be an object with every ``required`` key.
 
     Keys outside ``allowed`` (default: ``required``) are rejected.
+
+    Returns:
+        `value`.
+
+    Raises:
+        ValueError: If `value` is not an object, or has missing or unsupported keys.
     """
     if not isinstance(value, dict):
         raise ValueError(f"{location} must be an object")
