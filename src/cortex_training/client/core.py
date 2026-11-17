@@ -442,7 +442,11 @@ def _log_safe_operation_body(body: dict) -> dict:
 
 
 class ChunkGroupError(requests.exceptions.HTTPError):
-    """Base class for structured chunk-group failures."""
+    """Raised when a large request that the client sends in several parts fails.
+
+    It's a `requests.HTTPError`. The `detail` attribute holds the details of the failure as a
+    dictionary.
+    """
 
     def __init__(self, message: str, *, response: requests.Response, detail: dict):
         super().__init__(
@@ -455,23 +459,27 @@ class ChunkGroupError(requests.exceptions.HTTPError):
 
 
 class ChunkGroupRestartError(ChunkGroupError):
-    """The server lost an incomplete group and the bounded replay also failed."""
+    """Raised when the service lost a large request's parts and sending them again also failed."""
 
 
 class ChunkGroupConflictError(ChunkGroupError):
-    """The same chunk-group identity was reused inconsistently."""
+    """Raised when the parts of a large request conflict with parts already sent for it."""
 
 
 class DatabaseAccessError(requests.exceptions.HTTPError, RuntimeError):
-    """The configured database or schema can't be found by the current role.
+    """Raised when the client's database or schema can't be found by the current role.
 
-    Raised for the API's HTTP 400 with code 517602 and message "Schema ... is
-    not found or not authorized". The client never creates a database; the
-    message says how to create it, get access, or use another.
-    ``kind`` is ``"schema"``, ``name`` the ``DATABASE.SCHEMA``, ``role`` the
-    session's role (None when it can't be determined, as for PAT clients), and
-    ``statement`` the CREATE DATABASE and CREATE SCHEMA statements that would
-    set it up, separated by ``; ``.
+    It means that the database or schema doesn't exist, or that the role can't use it. The client
+    never creates a database. The error message says how to create one, get access, or use
+    another. It's a `requests.HTTPError` and a `RuntimeError`.
+
+    Attributes:
+        kind: The kind of object that wasn't found, `"schema"`.
+        name: The name that wasn't found, as `DATABASE.SCHEMA`.
+        role: The role of the session, or `None` when it can't be determined, as for a
+            programmatic access token.
+        statement: The `CREATE DATABASE` and `CREATE SCHEMA` statements that would set it up,
+            separated by `; `.
     """
 
     def __init__(
@@ -1065,12 +1073,14 @@ def _is_waiting_generate_retryable(exc: BaseException) -> bool:
 
 @dataclass(frozen=True)
 class GenerateHandle:
-    """Returned by ``generate`` when ``wait_seconds`` is not ``None``.
+    """The result of a `generate` call that waits for the generation.
 
-    If the server sent back the complete, successful result before the wait
-    ran out, ``result`` holds it, in the same form
-    :meth:`CortexTrainingClient.poll_request` gives. Otherwise ``result`` is
-    ``None`` and ``request_id`` should be polled.
+    Attributes:
+        request_id: The ID of the generate request. Pass it to `poll_request` when `result` is
+            `None`.
+        result: The complete result, as `poll_request` would return it, if the generation
+            finished successfully while the server held the call. Otherwise `None`, and you poll
+            for the result.
     """
 
     request_id: str
@@ -1079,12 +1089,10 @@ class GenerateHandle:
 
 
 class JobType(str, Enum):
-    """Sub-job types defined by the Cortex Training schema.
+    """The type of a sub-job.
 
-    Matches the ``job_type`` enum in the REST schema; see
-    ``docs/reference/rest-api.md`` section 8.1. Not every schema value can
-    currently be submitted: ``LOG_PROBABILITY`` configs still validate and
-    serialize, but the client and CLI reject them at submission.
+    `LOG_PROBABILITY` is part of the schema, but you can't submit it. To get per-token log
+    probabilities, use `forward` on a training sub-job.
     """
 
     TRAINING = "training"
@@ -1115,11 +1123,10 @@ def _reject_log_probability_sub_job(job_type: Any, *, location: str) -> None:
 
 
 class Hardware(str, Enum):
-    """GPU hardware for create job and capacity.
+    """The GPU type for a job or a capacity query.
 
-    Wire values match the REST ``hardware`` field; see
-    ``docs/reference/rest-api.md`` sections 5.1 and 5.5. Omitting it defaults to
-    H200 on the server. Unknown values are rejected client-side.
+    If you omit the hardware, the job or query uses `H200`. A value that isn't one of these is
+    rejected before the request is sent.
     """
 
     H200 = "H200"
@@ -1272,17 +1279,23 @@ def _validate_primerl_lm_head_config(extra: dict, *, location: str) -> None:
 
 
 class TrainingConfig(BaseModel):
-    """Training hyperparameters for a training sub-job.
+    """The training settings of a training sub-job.
 
-    Required fields mirror the server-side validator: ``max_seq_len > 0``,
-    ``train_batch_size > 0``, ``n_gpus > 0``, and an ``optimizer`` that carries
-    at least one setting. ``optimizer`` is canonicalized on construction (see
-    :func:`cortex_training.client.optimizer.normalize_optimizer_config`), so a block
-    holding only ``gradient_clipping`` is hoisted onto the typed field and
-    leaves ``optimizer`` empty.
+    The `optimizer` is checked and rewritten into a standard form when you create the object. A
+    block that holds only `gradient_clipping` moves that value to the `gradient_clipping` field
+    and leaves `optimizer` empty. Other fields that you pass are sent to the service unchanged,
+    and you can read them from `model_extra`.
 
-    Unknown fields are passed through to the server unchanged
-    (accessible via ``model_extra``). See ``docs/reference/rest-api.md`` section 8.2.
+    Attributes:
+        optimizer: The optimizer settings, such as `{"name": "AdamW", "lr": 1e-4}`.
+        max_seq_len: The maximum sequence length for training. Must be greater than 0.
+        train_batch_size: The training batch size. Must be greater than 0.
+        n_gpus: The number of GPUs, which is the data-parallel size. Must be greater than 0.
+        gradient_clipping: The gradient clipping threshold.
+        multiplex_job_id: The sub-job, as `{job_id}:{sub_job_type}:{index}`, in another job
+            whose GPUs this sub-job shares.
+        load_optimizer_states: Whether to load optimizer states when you resume from a
+            checkpoint. Set it to `False` when the number of GPUs changes.
     """
 
     optimizer: dict = PydanticField(description="Optimizer config dict (e.g. {name: AdamW, lr: 1e-4}).")
@@ -1334,10 +1347,19 @@ class TrainingConfig(BaseModel):
         return self
 
     def validate(self) -> None:
-        """Re-validate the current state. Backward-compatible with the old dataclass API."""
+        """Check the current values again.
+
+        Raises:
+            pydantic.ValidationError: If a value isn't valid.
+        """
         self.__class__.model_validate(self.model_dump(by_alias=True))
 
     def to_wire(self) -> dict:
+        """Return the settings in the form that the service accepts.
+
+        Returns:
+            The settings as a dictionary.
+        """
         out: dict = {
             "optimizer": self.optimizer,
             "max_seq_len": self.max_seq_len,
@@ -1356,11 +1378,16 @@ class TrainingConfig(BaseModel):
 
 
 class InferenceConfig(BaseModel):
-    """Sampling/log-probability config for an inference sub-job.
+    """The sampling settings of a sampling sub-job.
 
-    Required fields mirror the server-side validator: ``max_seq_len > 0`` and
-    ``n_gpus > 0``. Unknown fields are passed through to the server unchanged
-    (accessible via ``model_extra``). See ``docs/reference/rest-api.md`` section 8.3.
+    Other fields that you pass are sent to the service unchanged, and you can read them from
+    `model_extra`.
+
+    Attributes:
+        max_seq_len: The maximum sequence length for sampling. Must be greater than 0.
+        n_gpus: The number of GPUs. Must be greater than 0.
+        multiplex_job_id: The sub-job, as `{job_id}:{sub_job_type}:{index}`, in another job
+            whose GPUs this sub-job shares.
     """
 
     max_seq_len: int = PydanticField(gt=0, description="Maximum sequence length for inference.")
@@ -1389,10 +1416,19 @@ class InferenceConfig(BaseModel):
         return self
 
     def validate(self) -> None:
-        """Re-validate the current state. Backward-compatible with the old dataclass API."""
+        """Check the current values again.
+
+        Raises:
+            pydantic.ValidationError: If a value isn't valid.
+        """
         self.__class__.model_validate(self.model_dump(by_alias=True))
 
     def to_wire(self) -> dict:
+        """Return the settings in the form that the service accepts.
+
+        Returns:
+            The settings as a dictionary.
+        """
         out: dict = {"max_seq_len": self.max_seq_len, "n_gpus": self.n_gpus}
         if self.multiplex_job_id is not None:
             out["multiplex_job_id"] = self.multiplex_job_id
@@ -1402,13 +1438,22 @@ class InferenceConfig(BaseModel):
 
 
 class SubJobConfig(BaseModel):
-    """One sub-job within a CreateJob request.
+    """One sub-job of a job.
 
-    Matches the ``SubJobConfig`` schema in ``docs/reference/rest-api.md``
-    section 8.1.
+    Build one with `SubJobConfig.training_job` or `SubJobConfig.sampling_job`, and pass a list of
+    them to `CortexTrainingClient.create_job`. A training sub-job sets `training`, and a sampling
+    sub-job sets `sampling`. They can't both be set.
 
-    Exactly one of ``training`` or ``sampling`` must be set, matching the
-    sub-job's ``job_type``.
+    Attributes:
+        job_type: The type of the sub-job.
+        model_name: The model to use, such as `"Qwen/Qwen3-8B"`.
+        training: The training settings. Required for a training sub-job.
+        sampling: The sampling settings. Required for a sampling sub-job.
+        global_batch_size: The batch size across all GPUs.
+        dtype: The model data type, such as `"bfloat16"`.
+        seed: The random seed.
+        model_post_init_ops: The post-initialization operations to run on the model.
+        source_checkpoint_info: The checkpoint to start from when the job is created.
     """
 
     job_type: JobType = PydanticField(description="Sub-job type (training, sampling, or log_probability).")
@@ -1454,28 +1499,33 @@ class SubJobConfig(BaseModel):
         model_post_init: list[str] | None = None,
         source_checkpoint_info: dict | None = None,
     ) -> "SubJobConfig":
-        """Build a training :class:`SubJobConfig`. All training fields are explicit.
+        """Build a training sub-job.
 
         Args:
-            model_name: Model identifier (e.g., "Qwen/Qwen3-1.7B").
-            optimizer: Optimizer config dict (e.g., {"name": "AdamW", "lr": 0.0001}).
-            max_seq_len: Maximum sequence length for training.
-            train_batch_size: Per-device batch size.
-            n_gpus: Number of GPUs (DP size).
-            gradient_clipping: Optional gradient clipping threshold.
-            multiplex_job_id: Optional multiplex job identifier.
-            load_optimizer_states: Whether to load optimizer states from
-                checkpoints. Set to ``False`` when loading across different DP
-                sizes (``n_gpus``) since optimizer states are DP-sharded and
-                cannot be resized. When ``None``, uses server default (True).
-                **This is a creation-time setting and cannot be changed later.**
-            extra_training: Additional training config keys (passthrough).
-            global_batch_size: Global batch size across all GPUs.
-            dtype: Model dtype (e.g., "bfloat16").
-            seed: Random seed.
-            model_post_init: List of post-initialization operations.
-            source_checkpoint_info: Optional checkpoint to resume from at
-                creation time (use ``{"checkpoint_id": "...", "source_job_id": "..."}`).
+            model_name: The model to train, such as `"Qwen/Qwen3-1.7B"`.
+            optimizer: The optimizer settings, such as `{"name": "AdamW", "lr": 0.0001}`.
+            max_seq_len: The maximum sequence length for training.
+            train_batch_size: The training batch size.
+            n_gpus: The number of GPUs, which is the data-parallel size.
+            gradient_clipping: The gradient clipping threshold.
+            multiplex_job_id: The sub-job, as `{job_id}:{sub_job_type}:{index}`, in another job
+                whose GPUs this sub-job shares.
+            load_optimizer_states: Whether to load optimizer states when you resume from a
+                checkpoint. Set it to `False` when you load across different numbers of GPUs
+                (`n_gpus`), because the optimizer states are split across GPUs and can't be resized.
+                If you omit it, the service default is `True`. You can set it only when you create
+                the job.
+            extra_training: More training settings that are sent as given, such as `model_provider`,
+                `ds_config`, and `peft_config`. Keys that have their own argument are ignored.
+            global_batch_size: The batch size across all GPUs.
+            dtype: The model data type, such as `"bfloat16"`.
+            seed: The random seed.
+            model_post_init: The post-initialization operations to run on the model.
+            source_checkpoint_info: The checkpoint to start from when the job is created, such as
+                `{"checkpoint_id": "...", "source_job_id": "..."}`.
+
+        Returns:
+            A `SubJobConfig` for a training sub-job.
         """
         _typed_training = set(TrainingConfig.model_fields.keys())
         passthrough_training = {k: v for k, v in (extra_training or {}).items() if k not in _typed_training}
@@ -1515,10 +1565,30 @@ class SubJobConfig(BaseModel):
         model_post_init: list[str] | None = None,
         source_checkpoint_info: dict | None = None,
     ) -> "SubJobConfig":
-        """Build a sampling :class:`SubJobConfig`.
+        """Build a sampling sub-job.
 
-        ``job_type`` remains for source compatibility, but only ``SAMPLING`` is
-        currently accepted.
+        Args:
+            model_name: The model to sample from, such as `"Qwen/Qwen3-1.7B"`.
+            max_seq_len: The maximum sequence length for sampling.
+            n_gpus: The number of GPUs.
+            multiplex_job_id: The sub-job, as `{job_id}:{sub_job_type}:{index}`, in another job
+                whose GPUs this sub-job shares.
+            extra_sampling: More sampling settings that are sent as given, such as
+                `gpu_memory_utilization` and `vllm_config`. Keys that have their own argument are
+                ignored.
+            job_type: Kept for compatibility. Only `JobType.SAMPLING` is accepted.
+            global_batch_size: The batch size across all GPUs.
+            dtype: The model data type, such as `"bfloat16"`.
+            seed: The random seed.
+            model_post_init: The post-initialization operations to run on the model.
+            source_checkpoint_info: The checkpoint to start from when the job is created, such as
+                `{"checkpoint_id": "...", "source_job_id": "..."}`.
+
+        Returns:
+            A `SubJobConfig` for a sampling sub-job.
+
+        Raises:
+            ValueError: If `job_type` isn't `JobType.SAMPLING`.
         """
         _reject_log_probability_sub_job(job_type, location="sampling_job().job_type")
         if job_type != JobType.SAMPLING:
@@ -1542,10 +1612,19 @@ class SubJobConfig(BaseModel):
         )
 
     def validate(self) -> None:
-        """Re-validate the current state. Backward-compatible with the old dataclass API."""
+        """Check the current values again.
+
+        Raises:
+            pydantic.ValidationError: If a value isn't valid.
+        """
         self.__class__.model_validate(self.model_dump(by_alias=True))
 
     def to_wire(self) -> dict:
+        """Return the sub-job in the form that the service accepts.
+
+        Returns:
+            The sub-job as a dictionary.
+        """
         wire: dict = {
             "job_type": self.job_type.value,
             "model_name": self.model_name,
@@ -1653,26 +1732,31 @@ def _whole_numbers_as_ints(value: Any) -> Any:
 
 
 def create_job_body_from_job(job: Mapping[str, Any], *, experiment_name: str | None = None) -> dict:
-    """A CreateJob body that launches a job configured like ``job``, a Get job record.
+    """Build a request body that launches a job configured like an existing job.
 
-    The body has every field a caller can set on a job, each with the value the
-    job runs with: its ``hardware``, ``comment``, timeouts and
-    ``experiment_name`` (the job's experiment, from :meth:`get_experiment_run`;
-    a copy then joins it as a new run), and its sub-jobs as ``sub_job_configs``,
-    each config as the record has it. That is the sub-job's effective config,
-    server defaults included, once the job is running on a service that reports
-    one, and the config as submitted before then. A timeout the job did not set
-    is the service's default; a ``comment``, ``seed``, ``dtype`` or
-    ``source_checkpoint_info`` the record leaves out is null, as is
-    ``experiment_name`` when not given. A model deployment keeps the
-    ``pending_timeout_seconds`` and ``experiment_name`` it cannot set null. The
-    fields the service adds (``job_id``, ``status``, ``sub_job_id``, times,
-    submitter, owner, image) are left out. A sub-job started from external
-    weights has ``source_checkpoint_info.external_stage_path`` null, to fill in:
-    the record does not say which weights.
+    The body has every field that you can set on a job, each with the value the job runs with:
+    its `hardware`, `comment`, timeouts, and `experiment_name`, and its sub-jobs as
+    `sub_job_configs`. A timeout that the job didn't set is the service's default. A `comment`,
+    `seed`, `dtype`, or `source_checkpoint_info` that the job record leaves out is `None`, and
+    so is `experiment_name` when you don't pass one. The fields the service adds, such as
+    `job_id`, `status`, and the times, are left out. A sub-job that started from external
+    weights has `source_checkpoint_info.external_stage_path` set to `None`, for you to fill in,
+    because the job record doesn't say which weights.
 
-    Raises ``ValueError`` for a record that cannot be copied: one with no
-    sub-jobs, or one with no ``hardware`` (the service could not read the job).
+    Pass the body to `create_job_from_body`.
+
+    Args:
+        job: A job, as `get_job` returns it.
+        experiment_name: The experiment for the new job. Use the job's experiment, from
+            `get_experiment_run`, to add the new job as a run of it. If you omit it,
+            `experiment_name` is `None` and the server creates an experiment.
+
+    Returns:
+        The request body, as a dictionary.
+
+    Raises:
+        ValueError: If the job has no sub-jobs or no `hardware`. The second happens when the
+            service couldn't read the job, so try again.
     """
     sub_jobs = job.get("sub_jobs") if isinstance(job, Mapping) else None
     if not isinstance(sub_jobs, list) or not sub_jobs:
@@ -2317,11 +2401,35 @@ def _build_labels(input_ids, attention_mask, payload: dict[str, Any]):
 
 
 def build_forward_backward_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
-    """Build tensor kwargs for a forward-backward training batch.
+    """Build the tensor keyword arguments of a forward and backward training batch.
 
-    ``payload`` is intentionally JSON-shaped so CLI examples can stay readable:
-    callers may provide either tokenizable ``texts`` plus a ``tokenizer`` or
-    direct tensor data under ``input_ids`` / ``labels`` / ``position_ids``.
+    The `payload` is shaped like JSON so that examples stay readable. It needs PyTorch, and
+    `transformers` when you pass `texts`.
+
+    Args:
+        payload: A dictionary that gives the batch in one of three ways:
+
+            - `kwargs`: a dictionary of tensor data, passed through with lists and
+              `{"data": ..., "dtype": ...}` values turned into tensors.
+            - `input_ids`: token IDs with shape `[batch, seq_len]`, as a nested list or a
+              `{"data": ..., "dtype": ...}` dictionary.
+            - `texts` and `tokenizer`: the text to tokenize, as a string or a list of strings,
+              and the name of a Hugging Face tokenizer. Also set `max_length` unless `padding`
+              isn't `"max_length"`. Optional: `batch_size`, `padding`, `truncation`, and
+              `add_special_tokens`.
+
+            With `input_ids` or `texts`, optional fields add more tensors. `labels` is
+            `"next_token"` (the default), `"input_ids"`, `"none"`, or tensor data. `ignore_index`
+            (default `-100`) marks tokens that don't count, and `mask_padding` (default `True`)
+            marks padding. `include_attention_mask` and `include_position_ids` add the
+            attention mask and position IDs, and `position_ids` can be `"arange"` or tensor data.
+
+    Returns:
+        A dictionary of tensors, such as `input_ids`, `labels`, `attention_mask`, and
+            `position_ids`.
+
+    Raises:
+        ValueError: If the payload isn't valid.
     """
     if not isinstance(payload, dict):
         raise ValueError("fwd-bwd payload must be a JSON object")
@@ -2387,7 +2495,19 @@ def build_forward_backward_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def serialize_forward_backward_args(args: tuple = (), kwargs: dict[str, Any] | None = None) -> bytes:
-    """Serialize ``{"args": args, "kwargs": kwargs}`` for Cortex Training fwd-bwd."""
+    """Serialize the arguments of a training batch into the payload that `forward_backward` takes.
+
+    Args:
+        args: The positional arguments, as a tuple.
+        kwargs: The keyword arguments, as a dictionary of tensors such as `input_ids` and
+            `labels`.
+
+    Returns:
+        The payload, as bytes.
+
+    Raises:
+        ValueError: If `args` isn't a tuple or `kwargs` isn't a dictionary.
+    """
     if not isinstance(args, tuple):
         raise ValueError("forward-backward args must be a tuple")
     if kwargs is None:
@@ -2402,7 +2522,18 @@ def serialize_forward_backward_args(args: tuple = (), kwargs: dict[str, Any] | N
 
 
 def build_forward_backward_payload(spec: dict[str, Any]) -> bytes:
-    """Build a serialized fwd-bwd byte payload from readable JSON."""
+    """Build the payload that `forward_backward` takes from a readable description of the batch.
+
+    Args:
+        spec: A dictionary that `build_forward_backward_kwargs` accepts, with an optional `args`
+            list. You can also nest it under a `payload` key.
+
+    Returns:
+        The payload, as bytes.
+
+    Raises:
+        ValueError: If the description isn't valid.
+    """
     if not isinstance(spec, dict):
         raise ValueError("fwd-bwd JSON must be an object")
     payload = spec.get("payload", spec)
@@ -2581,33 +2712,23 @@ def _sub_job_id_params(sub_job_id: str | None) -> dict[str, dict[str, str]]:
 
 
 class CortexTrainingClient:
-    """HTTP client for the Cortex Training REST API (``cortex-training``).
+    """Client for the Cortex Training API.
 
-    Construct with :meth:`from_configs`, which uses your Snowflake connection
-    profile::
+    Create a client with `from_configs`, the recommended constructor. It reads your
+    Snowflake connection profile. Build sub-jobs with `SubJobConfig` and submit them
+    with `create_job`. Close the client when you're done with it, or use it as a
+    context manager so that it closes itself on exit.
 
-        client = CortexTrainingClient.from_configs()  # default profile
-        client = CortexTrainingClient.from_configs(connection="training")
-
-    Against a local or otherwise compatible server, construct the client
-    directly with an explicit ``base_url``; this skips PAT auth::
-
-        client = CortexTrainingClient(
-            base_url="http://localhost:8084",
-            database="MY_DB",
-            schema="PUBLIC",
-        )
-
-    Then build one or more sub-jobs and submit::
-
-        sub = SubJobConfig.training_job(
-            model_name="Qwen/Qwen3-1.7B",
-            optimizer={"name": "AdamW", "lr": 1e-5},
-            max_seq_len=2048,
-            train_batch_size=1,
-            n_gpus=1,
-        )
-        job_id = client.create_job(sub_jobs=[sub])
+    By default, the client sends best-effort telemetry to Snowflake about its own
+    operations: an event when an operation fails, an event with the outcome of each
+    log or metrics download, and aggregate counts and durations of operations by
+    outcome. Events carry the operation name, timing, request and retry counts,
+    identifiers such as the job, sub-job, request, and checkpoint IDs, the SDK
+    version, and your Snowflake account host. A failure also carries the error type,
+    HTTP status, and error code, and a message with common credential patterns
+    removed. Telemetry never changes the result of a call, and errors in sending it
+    are ignored. To turn it off, set `CORTEX_TRAINING_DISABLE_TELEMETRY=1` before you
+    create the client.
     """
 
     def __init__(
@@ -2624,6 +2745,31 @@ class CortexTrainingClient:
         max_retries: int = 10,
         request_timeout: float | tuple[float, float] = (30.0, 600.0),
     ):
+        """Create a client for a REST API address, without Snowflake authentication.
+
+        Most callers use `from_configs` instead, which signs in with your Snowflake
+        connection profile. A client built directly sends no credentials and no
+        telemetry.
+
+        Args:
+            base_url: The REST API address, without a path.
+            database: The database that the client's job calls apply to.
+            schema: The schema that the client's job calls apply to.
+            endpoint: The service name in request paths.
+            poll_interval: Seconds before the first poll of a wait, such as
+                `wait_for_job`. Must be greater than 0.
+            poll_timeout: Seconds that a wait polls before it gives up. Must be greater
+                than 0.
+            poll_backoff_multiplier: How much each poll interval grows after the last
+                one. Must be at least 1.0.
+            poll_max_interval: Longest interval between polls, in seconds. Must be at
+                least `poll_interval`.
+            pool_maxsize: Size of the HTTP connection pool. Must be greater than 0.
+            max_retries: How many times a request that failed with a temporary error is
+                tried again after the first attempt. Must be at least 0.
+            request_timeout: Seconds to wait for a response, or a `(connect, read)`
+                pair of seconds. The default is `(30.0, 600.0)`.
+        """
         if poll_interval <= 0:
             raise ValueError("poll_interval must be > 0")
         if poll_timeout <= 0:
@@ -2698,10 +2844,11 @@ class CortexTrainingClient:
 
     @property
     def auto_create_database(self) -> bool:
-        """Deprecated, and always False: the client never creates a database.
+        """Whether the client creates a missing database, which is always `False`.
 
-        A request answered "database or schema not found" raises
-        :class:`DatabaseAccessError`, which says how to create it.
+        Deprecated: the client never creates a database. A request that fails because
+        the database or schema isn't found raises `DatabaseAccessError`, which says how
+        to create it. Setting the property to `True` only emits a `FutureWarning`.
         """
         return False
 
@@ -2719,16 +2866,14 @@ class CortexTrainingClient:
 
     @property
     def keep_artifact_sessions(self) -> bool:
-        """Whether a download keeps its Snowflake session open for the next one.
+        """Whether a log or metrics download keeps its Snowflake session open for the next one.
 
-        False by default: each artifact download logs in and closes its session
-        when it returns. True keeps the session of a download that succeeded, up
-        to two per database and schema (two downloads can run at once), so the
-        next download starts with its first ``LIST``; a session idle for 30
-        minutes is closed instead of reused. For a long-lived reader such as the
-        TUI. :meth:`close` closes the kept sessions, as does setting this back to
-        False on the client that owns them; a client from :meth:`for_job` shares
-        them.
+        The default is `False`: each download signs in and closes its session when it
+        returns. When it's `True`, the client keeps the session of a download that
+        succeeded and reuses it for the next download, which saves the sign-in. A
+        session that has been idle for 30 minutes is closed instead of reused. `close`
+        closes the kept sessions, and so does setting this back to `False` on the client
+        that owns them. A client that `for_job` returns shares them.
         """
         return self._kept_sessions is not None
 
@@ -2755,15 +2900,33 @@ class CortexTrainingClient:
     ) -> "CortexTrainingClient":
         """Create a client from your Snowflake connection profile.
 
-        The profile is ``connection``, else ``"profile"`` in
-        ``<Snowflake folder>/cortex-training/config.json`` (by default
-        ``~/.snowflake/cortex-training/config.json``), else the Snowflake
-        default profile. ``CORTEX_TRAINING_HOST`` and ``CORTEX_TRAINING_PAT``
-        are used only when no profile exists (CI). The database is
-        ``database``, else ``CORTEX_TRAINING_DATABASE``, else the profile's
-        database, else ``CORTEX_TRAINING_DB``; the schema follows the same order
-        and defaults to ``PUBLIC``. Other keyword arguments (``poll_interval``,
-        ``verify_ssl``, ...) go to the constructor.
+        This is the recommended way to create a client. The client uses the first
+        profile that applies, in this order:
+
+        1. The profile named by `connection`.
+        2. The profile named by `profile` in
+           `<Snowflake folder>/cortex-training/config.json`, which is
+           `~/.snowflake/cortex-training/config.json` by default.
+        3. Your Snowflake default profile.
+        4. If you have no Snowflake profile, the host and programmatic access token in
+           `CORTEX_TRAINING_HOST` and `CORTEX_TRAINING_PAT`. Use these for automated jobs.
+
+        The database is the first of `database`, the `CORTEX_TRAINING_DATABASE`
+        environment variable, the profile's database, and `CORTEX_TRAINING_DB`. The schema
+        follows the same order with `schema`, `CORTEX_TRAINING_SCHEMA`, and the profile's
+        schema, and then falls back to `PUBLIC`.
+
+        Args:
+            connection: The name of the Snowflake connection profile to use. If you omit
+                it, the other places in the list above are tried.
+            database: The database to use. If you omit it, the order above applies.
+            schema: The schema to use. If you omit it, the order above applies.
+            kwargs: Client options, such as `poll_interval`, `poll_timeout`,
+                `max_retries`, `request_timeout`, and `verify_ssl`. `verify_ssl` is a
+                boolean that defaults to `True`.
+
+        Returns:
+            A new `CortexTrainingClient`.
         """
         from cortex_training import _picker
 
@@ -2802,13 +2965,29 @@ class CortexTrainingClient:
 
     @classmethod
     def from_pat(cls, *args: Any, **kwargs: Any) -> "CortexTrainingClient":
-        """Deprecated: use :meth:`from_configs`. Same arguments as before (``host``, ``pat``, ...)."""
+        """Deprecated: use from_configs.
+
+        Args:
+            args: Positional arguments, as before.
+            kwargs: Keyword arguments, as before, such as `host` and `pat`.
+
+        Returns:
+            A new `CortexTrainingClient`.
+        """
         warnings.warn(_deprecated_constructor("from_pat"), FutureWarning, stacklevel=2)
         return cls._from_pat(*args, **kwargs)
 
     @classmethod
     def from_connection_name(cls, *args: Any, **kwargs: Any) -> "CortexTrainingClient":
-        """Deprecated: use :meth:`from_configs`. Same arguments as before (``connection_name``, ...)."""
+        """Deprecated: use from_configs.
+
+        Args:
+            args: Positional arguments, as before.
+            kwargs: Keyword arguments, as before, such as `connection_name`.
+
+        Returns:
+            A new `CortexTrainingClient`.
+        """
         warnings.warn(_deprecated_constructor("from_connection_name"), FutureWarning, stacklevel=2)
         return cls._from_profile(*args, **kwargs)
 
@@ -2942,17 +3121,19 @@ class CortexTrainingClient:
         *,
         attributes: dict[str, Any] | None = None,
     ) -> None:
-        """Emit a best-effort OTLP log record used as a client metric.
+        """Send a custom telemetry event to Snowflake.
 
-        Profile clients reuse their live Snowflake session token. PAT clients
-        lazily exchange the PAT for a cached session token on the first call.
-        Local/mock clients, or clients constructed with
-        ``CORTEX_TRAINING_DISABLE_TELEMETRY`` set, treat this method as a no-op.
-        All authentication, discovery, and export errors are ignored.
+        The call is best effort: it never raises, and errors in sending the event are
+        ignored. The `operation`, `value`, and `attributes` you pass are sent to
+        Snowflake, so don't put sensitive data in them, such as prompts or credentials.
+        Keep attribute values to a small set of distinct values. A client created with
+        the `CORTEX_TRAINING_DISABLE_TELEMETRY=1` environment variable set, and a
+        client built directly from a `base_url`, ignore the call.
 
-        Every record carries the ``client.surface`` attribute (``sdk`` unless
-        the ``cortex-training`` CLI or TUI built this client); a value in
-        ``attributes`` takes precedence.
+        Args:
+            operation: The name of the event.
+            value: The value of the event, such as a number or a dictionary of fields.
+            attributes: Extra attributes to attach to the event.
         """
         try:
             if self._metric_emitter is not None:
@@ -2966,9 +3147,10 @@ class CortexTrainingClient:
             return
 
     def close(self) -> None:
-        """Flush telemetry briefly and close this client's HTTP sessions.
+        """Send any telemetry the client still holds, and close the client's HTTP sessions.
 
-        A client from :meth:`for_job` borrows these, so closing it is a no-op.
+        The call waits at most one second for telemetry. On a client that `for_job`
+        returns, it does nothing.
         """
         if not self._owns_session:
             return
@@ -2988,15 +3170,13 @@ class CortexTrainingClient:
                     self._auth_provider.close()
 
     def close_telemetry(self, timeout: float = 1.0) -> None:
-        """Send the telemetry this client still holds, waiting at most ``timeout``
-        seconds, then send no more.
+        """Send any telemetry the client still holds, and then stop sending telemetry.
 
-        :meth:`close` does this with one second, and so does interpreter exit
-        for a client nobody closed; exit doesn't wait again on telemetry closed
-        here. The ``cortex-training`` CLI calls it as each command finishes, with
-        two seconds, and the TUI as it quits, with one, without closing the
-        client's sessions. A client from :meth:`for_job` borrows its telemetry,
-        so this is a no-op.
+        Unlike `close`, this leaves the client's HTTP sessions open. On a client that
+        `for_job` returns, it does nothing.
+
+        Args:
+            timeout: The most seconds to wait for telemetry to be sent.
         """
         if not self._owns_session or self._metric_emitter is None:
             return
@@ -3559,30 +3739,33 @@ class CortexTrainingClient:
         idle_timeout_seconds: int | None = None,
         pending_timeout_seconds: int | None = None,
     ) -> str:
-        """Create a job from a list of sub-jobs and return its server job_id.
+        """Create a job from a list of sub-jobs and return its job ID.
 
-        Each :class:`SubJobConfig` is validated client-side before the request
-        is sent (see :meth:`SubJobConfig.validate`). A job supports zero or one
-        ``training`` sub-job and any number of ``sampling`` sub-jobs;
-        ``log_probability`` sub-jobs are rejected here. ``job_id`` is optional;
-        when omitted the server generates one. ``experiment_name`` is optional;
-        when omitted the server auto-creates an experiment for the job.
-        ``hardware`` is optional (:class:`Hardware`.H200 / .B200 / .B300); when
-        set, all sub-jobs in the job run on that GPU type. Omitted defaults to
-        H200.
-        ``idle_timeout_seconds`` bounds how long the job may sit idle before the
-        server reclaims it: ``0`` disables reclamation, any other value must be
-        between 300 and 604,800. ``pending_timeout_seconds`` bounds how long the
-        job may wait for capacity before failing with ``pending_timeout``: between
-        300 and 604,800, with no disable value. Omit either to use the server
-        default, currently 30 minutes for idle and 24 hours for pending.
+        Each `SubJobConfig` is validated before the request is sent. The calling role needs
+        `USE CORTEX TRAINING` on the account, plus `CREATE EXPERIMENT` on the schema when you
+        omit `experiment_name`, or `MODIFY` on that experiment when you pass it. Without
+        `USE CORTEX TRAINING`, the call raises `requests.HTTPError`. An `ACCOUNTADMIN` can
+        grant the privilege with `GRANT USE CORTEX TRAINING ON ACCOUNT TO ROLE <role>`.
 
-        The calling role needs ``USE CORTEX TRAINING`` on the account, plus
-        ``CREATE EXPERIMENT`` on the schema when ``experiment_name`` is omitted
-        or ``MODIFY`` on that experiment when it is given. Without
-        ``USE CORTEX TRAINING`` the service answers 403 and this raises
-        :class:`requests.HTTPError`; an ``ACCOUNTADMIN`` can grant it with
-        ``GRANT USE CORTEX TRAINING ON ACCOUNT TO ROLE <role>``.
+        Args:
+            sub_jobs: At most one `training` sub-job and any number of `sampling` sub-jobs.
+            job_id: The ID for the new job. If you omit it, the server generates one.
+            experiment_name: The experiment to record the job in. If you omit it, the server
+                creates an experiment for the job.
+            hardware: The GPU type for every sub-job in the job: `Hardware.H200`,
+                `Hardware.B200`, or `Hardware.B300`, or the matching string. If you omit it, the
+                job runs on `H200`.
+            idle_timeout_seconds: How long the job can sit idle before the server reclaims it:
+                300 to 604,800 seconds (5 minutes to 7 days), or `0` to turn reclamation off.
+                The default is 30 minutes.
+            pending_timeout_seconds: How long the job can wait for capacity before it fails with
+                `pending_timeout`: 300 to 604,800 seconds. The default is 24 hours.
+
+        Returns:
+            The job ID.
+
+        Raises:
+            ValueError: If `sub_jobs` is empty, a sub-job isn't valid, or a timeout is out of range.
         """
         if not sub_jobs:
             raise ValueError("create_job requires a non-empty sub_jobs list")
@@ -3626,19 +3809,19 @@ class CortexTrainingClient:
 
     @_track_operation("create_job")
     def create_job_from_body(self, body: dict) -> dict:
-        """Create a job from a raw REST CreateJob request body.
+        """Create a job from a raw request body, for tooling that already has the JSON payload.
 
-        This is useful for tooling that already has the REST JSON payload,
-        while :meth:`create_job` remains the typed path for Python callers.
+        `create_job` is the typed path for Python callers. The same sub-job rules apply: at most
+        one `training` sub-job, and no `log_probability` sub-jobs. An invalid `peft_config` in
+        the body raises `ValueError` before the request is sent. The rest of the body, including
+        `optimizer`, is sent as given.
 
-        A job supports zero or one ``training`` sub-job and any number of
-        ``sampling`` sub-jobs; a second training sub-job or any
-        ``log_probability`` sub-job raises :class:`ValueError` before the
-        request is sent.
+        Args:
+            body: The job to create, as a dictionary with a `sub_job_configs` list. Use
+                `create_job_body_from_job` to build a body from an existing job.
 
-        Every ``peft_config`` present in the body is canonicalized in place and
-        an invalid one raises :class:`ValueError` before the request is sent.
-        The rest of the body, including ``optimizer``, is forwarded as given.
+        Returns:
+            The server's response, which includes the new job's `job_id`.
         """
         if not isinstance(body, dict):
             raise ValueError("create_job_from_body requires a JSON object")
@@ -3671,9 +3854,21 @@ class CortexTrainingClient:
     def create_model_deployment(
         self, spec: ModelDeploymentSpec | Mapping[str, Any]
     ) -> dict[str, Any]:
-        """Create an evaluation deployment and return only its public metadata.
+        """Create a model deployment and return its metadata.
 
-        See ``docs/reference/rest-api.md`` section 14.
+        The metadata includes the `deployment` ID and the endpoint's `base_url`. The deployment
+        starts in `PENDING`. Call `wait_for_model_deployment` to wait until it's `READY`.
+
+        Args:
+            spec: A `ModelDeploymentSpec`, or a dictionary with the same `deployment`, `source`,
+                and `inference` fields as `ModelDeploymentSpec.from_dict` accepts.
+
+        Returns:
+            The deployment's metadata, such as its `deployment` ID, `status`, `model_source`,
+                `replicas`, `gpus_per_replica`, and `base_url`.
+
+        Raises:
+            ValueError: If the spec isn't valid.
         """
         raw_spec = (
             spec.to_public_spec()
@@ -3735,7 +3930,24 @@ class CortexTrainingClient:
 
     @_track_operation("wait_for_job")
     def wait_for_job(self, job_id: str) -> dict:
-        """Poll until the job reaches ``running``. Raises on terminal states or timeout."""
+        """Poll until the job is `running`.
+
+        Polling follows the client's `poll_interval`, `poll_backoff_multiplier`,
+        `poll_max_interval`, and `poll_timeout` settings. The call raises `RuntimeError` if
+        the job reaches an ended state, such as `failed` or `cancelled`, before it runs, and
+        `TimeoutError` if the job isn't running after `poll_timeout` seconds.
+
+        Args:
+            job_id: The job to wait for.
+
+        Returns:
+            The job, as `get_job` returns it.
+
+        Raises:
+            RuntimeError: If the job reaches an ended state, such as `failed` or `cancelled`,
+                before it runs.
+            TimeoutError: If the job isn't running after `poll_timeout` seconds.
+        """
         deadline = time.monotonic() + self.poll_timeout
         delay = self.poll_interval
         while time.monotonic() < deadline:
@@ -3761,11 +3973,31 @@ class CortexTrainingClient:
         *,
         _retry_on: Callable[[BaseException], bool] | None = None,
     ) -> dict:
+        """Return a job.
+
+        Args:
+            job_id: The job to read.
+
+        Returns:
+            The job, as a dictionary with fields such as `job_id`, `status`, `reason`, and
+                `sub_jobs`.
+        """
         resp = self._send("GET", f"{self._prefix}/{job_id}", retry_on=_retry_on or _is_transient)
         return resp.json()
 
     @_track_operation("list_jobs")
     def list_jobs(self, status: str | None = None) -> list:
+        """Return the jobs in the client's database and schema.
+
+        To list jobs across the account, use `iter_jobs` or `list_jobs_page`.
+
+        Args:
+            status: Return only jobs in this status, such as `running`. Only one status is
+                accepted. If you omit it, the call returns every job.
+
+        Returns:
+            A list of jobs, each a dictionary as `get_job` returns.
+        """
         params = {}
         if status is not None:
             params["status"] = status
@@ -3774,11 +4006,12 @@ class CortexTrainingClient:
 
     @_track_operation("list_models")
     def list_models(self) -> list:
-        """Return active models configured for new jobs.
+        """Return the models that are active for new jobs.
 
-        Account-scoped ``GET /api/v2/{endpoint}/models``. The catalog is not
-        database- or schema-specific, so the configured database and schema
-        are not part of the path.
+        The list applies to the whole account, not to the client's database and schema.
+
+        Returns:
+            A list of dictionaries, each with the model's `name`.
         """
         resp = self._send(
             "GET",
@@ -3808,10 +4041,20 @@ class CortexTrainingClient:
     def list_model_deployments(
         self, status: str | Iterable[str] | None = None
     ) -> list[dict[str, Any]]:
-        """Return sanitized metadata for every marked deployment in scope.
+        """Return the metadata for every deployment in the client's database and schema.
 
-        ``status`` keeps only deployments in the given deployment status(es),
-        e.g. ``"READY"`` or ``["PENDING", "INITIALIZING"]`` (case-insensitive).
+        Entries don't include `base_url`. Use `get_model_deployment` to get it.
+
+        Args:
+            status: Return only deployments in this status, or in any of these statuses, such as
+                `"READY"` or `["PENDING", "INITIALIZING"]`. Case doesn't matter. If you omit it,
+                the call returns every deployment.
+
+        Returns:
+            A list of deployment metadata dictionaries.
+
+        Raises:
+            ValueError: If a status isn't a deployment status.
         """
         wanted = _model_deployment_status_filter(status)
         deployments = []
@@ -3824,14 +4067,36 @@ class CortexTrainingClient:
 
     @_model_deployment_operation
     def get_model_deployment(self, deployment_id: str) -> dict[str, Any]:
-        """Return sanitized metadata for one opaque deployment ID."""
+        """Return the metadata for one deployment.
+
+        The metadata includes `deployment`, `status`, `model_source`, and the capacity fields.
+        `base_url` is included unless the deployment is `FAILED`, `DROPPING`, `DROPPED`, or
+        `TERMINATED`. `failure` is included for a `FAILED` or `TERMINATED` deployment.
+
+        Args:
+            deployment_id: The deployment ID, in the form `sf-ct-<UUID>`.
+
+        Returns:
+            The deployment's metadata.
+        """
         job = self._get_model_deployment_job(_job_id_from_deployment_id(deployment_id))
         return _model_deployment_metadata(
             job, deployment_id, base_url=self.model_deployment_base_url
         )
 
     def describe_model_deployment(self, deployment_id: str) -> dict[str, Any]:
-        """Return one deployment's status, endpoint, scope, and configuration."""
+        """Return one deployment's status, endpoint, and configuration.
+
+        The configuration is grouped under `spec`, with the same `deployment`, `source`, and
+        `inference` fields as the create spec. It's a read view, so it isn't guaranteed to be
+        valid input for `create_model_deployment`.
+
+        Args:
+            deployment_id: The deployment ID, in the form `sf-ct-<UUID>`.
+
+        Returns:
+            The deployment's status, endpoint, database, schema, and `spec`.
+        """
         return _model_deployment_description(
             self.get_model_deployment(deployment_id),
             database=self.database,
@@ -3840,11 +4105,26 @@ class CortexTrainingClient:
 
     @_model_deployment_operation
     def wait_for_model_deployment(self, deployment_id: str) -> dict[str, Any]:
-        """Poll until an opaque deployment ID is READY or terminal.
+        """Poll until the deployment is `READY`, and return its metadata.
 
-        Raises :class:`ModelDeploymentWaitError` for a terminal status other
-        than READY and :class:`ModelDeploymentWaitTimeout` when the poll timeout
-        passes; both carry the last observed metadata as ``deployment``.
+        Polling follows the client's `poll_interval`, `poll_backoff_multiplier`,
+        `poll_max_interval`, and `poll_timeout` settings. The call raises a `RuntimeError` if
+        the deployment reaches `FAILED`, `TERMINATED`, or `DROPPED`, and a `TimeoutError` if
+        it isn't `READY` after `poll_timeout` seconds. Both errors have a `deployment`
+        attribute with the last metadata that was read. A timeout doesn't drop the
+        deployment, which keeps holding GPUs until you drop it.
+
+        Args:
+            deployment_id: The deployment ID, in the form `sf-ct-<UUID>`.
+
+        Returns:
+            The deployment's metadata, including `base_url`.
+
+        Raises:
+            RuntimeError: If the deployment reaches `FAILED`, `TERMINATED`, or `DROPPED`. The
+                error's `deployment` attribute holds the last metadata that was read.
+            TimeoutError: If the deployment isn't `READY` after `poll_timeout` seconds. The
+                error's `deployment` attribute holds the last metadata that was read.
         """
         job_id = _job_id_from_deployment_id(deployment_id)
         deadline = time.monotonic() + self.poll_timeout
@@ -3889,16 +4169,19 @@ class CortexTrainingClient:
 
     @_model_deployment_operation
     def drop_model_deployment(self, deployment_id: str) -> dict[str, Any]:
-        """Idempotently drop one opaque deployment ID.
+        """Drop a deployment and release its GPUs.
 
-        A ``DROPPING`` or ``DROPPED`` deployment is reported as dropped without
-        a second cancel. A ``FAILED`` or ``TERMINATED`` one holds no GPUs and can
-        never be dropped, since the server rejects cancelling it, so it is
-        returned as ``dropped: False`` with its ``status``; that is not an error.
+        Dropping is safe to retry: a deployment that's already `DROPPING` or `DROPPED` is
+        reported as dropped. A `FAILED` or `TERMINATED` deployment holds no GPUs and can't be
+        dropped, so the call returns `{"dropped": False, "status": ...}` instead of raising an
+        error. A deployment that no longer exists is reported as dropped.
 
-        A missing deployment is reported as dropped only when the lookup fails
-        with the job-not-found code. A bare 404 proves nothing about the
-        deployment, which could still be serving, so it propagates.
+        Args:
+            deployment_id: The deployment ID, in the form `sf-ct-<UUID>`.
+
+        Returns:
+            A dictionary with the `deployment` ID and `dropped`, which is `True` when the
+                deployment is dropped or being dropped.
         """
         job_id = _job_id_from_deployment_id(deployment_id)
         try:
@@ -3925,23 +4208,33 @@ class CortexTrainingClient:
         created_before: date | datetime | str | None = None,
         page_size: int = 100,
     ) -> Iterator[dict]:
-        """Yield the jobs the caller can see across the account, newest first.
+        """Yield the jobs you can see across the account, newest first.
 
-        Reads the account-level ``GET /api/v2/{endpoint}`` route rather than
-        this client's schema, and follows ``next_page_token`` until the server
-        returns none; a page may hold fewer than ``page_size`` rows, even none.
-        Arguments are checked on the call, pages fetched as you iterate:
-        ``page_size`` is 1 to 1000, and ``schema`` needs ``database`` with it.
-        The server applies every filter: ``database`` / ``schema`` narrow the
-        scope, ``status`` is one status or a list of them (``active`` and
-        ``terminal`` name groups), ``submitted_by`` takes a user name, and
-        ``created_after`` (inclusive) / ``created_before`` (exclusive) take a
-        ``date``, a ``datetime`` (sent in UTC; naive is taken as UTC) or a
-        string sent as-is. Rows also carry ``database_name`` and
-        ``schema_name``; use :meth:`for_job` for per-job calls on one.
+        Pages are fetched as you iterate. The server applies every filter. Each job also includes
+        `database_name` and `schema_name`. To make per-job calls on one, use `for_job`. Arguments
+        are checked when you call the method, before any request.
 
-        A 404 means account-level listing is not enabled for this account, and
-        is raised at once rather than retried.
+        If account-level job listing isn't enabled for your account, the call raises an HTTP 404
+        error without retrying.
+
+        Args:
+            database: Return only jobs in this database.
+            schema: Return only jobs in this schema. Requires `database`.
+            status: One status or a list of statuses. `active` and `terminal` each name a group of
+                statuses.
+            submitted_by: Return only jobs submitted by this user name.
+            created_after: Return only jobs created at or after this time: a `date`, a
+                `datetime`, or a string. A `datetime` without a time zone is treated as UTC.
+            created_before: Return only jobs created before this time. Takes the same types as
+                `created_after`.
+            page_size: Jobs per page, from 1 to 1,000. A page can hold fewer jobs than this, or
+                none.
+
+        Yields:
+            Jobs, each a dictionary as `get_job` returns, plus `database_name` and `schema_name`.
+
+        Raises:
+            ValueError: If `page_size` is out of range, or you pass `schema` without `database`.
         """
         params = self._account_jobs_params(
             "iter_jobs",
@@ -3969,26 +4262,45 @@ class CortexTrainingClient:
         max_retries: int | None = None,
         request_timeout: float | tuple[float, float] | None = None,
     ) -> dict:
-        """Read one page of the jobs the caller can see across the account.
+        """Return one page of the jobs that `iter_jobs` yields.
 
-        Returns ``{"jobs": [...], "next_page_token": str | None}``. Jobs come
-        newest first and carry ``database_name`` and ``schema_name``; use
-        :meth:`for_job` for per-job calls on one. For the next page, pass
-        ``next_page_token`` back as ``page_token`` with the same filters
-        (``page_size`` may change), so compute a moving bound such as
-        ``created_after`` once per walk; ``None`` means there is no next page.
-        A page can hold fewer than ``page_size`` jobs, or none, and still carry
-        a token. The filters are those of :meth:`iter_jobs`, read the same way,
-        and are checked before any request.
+        To get the next page, pass `next_page_token` back as `page_token` with the same filters.
+        You can change `page_size`. If you filter on a moving time, such as a `created_after`
+        relative to now, compute it once and reuse it for every page. When `next_page_token` is
+        `None`, there are no more pages. A page can hold fewer jobs than `page_size`, or none,
+        and still have a token.
 
-        ``max_retries`` (retries after the first attempt) and
-        ``request_timeout`` (seconds, or a ``(connect, read)`` pair) bound this
-        page; ``None`` keeps the client's own.
+        The call raises `AccountJobListUnavailable` if account-level listing is unavailable
+        for your account, without retrying, and `InvalidPageToken` if `page_token` isn't
+        valid. Both are `requests.HTTPError` subclasses, as is any other failed request. It
+        raises `ValueError` for an argument that isn't valid.
 
-        Raises :class:`AccountJobListUnavailable` for 403, 404 and 405, without
-        a retry; :class:`InvalidPageToken` for 400 ``Invalid page_token``;
-        ``requests.HTTPError`` for any other failed answer; and ``ValueError``
-        for bad arguments or a page body that is not a job list.
+        Args:
+            database: Return only jobs in this database.
+            schema: Return only jobs in this schema. Requires `database`.
+            status: One status or a list of statuses. `active` and `terminal` each name a group of
+                statuses.
+            submitted_by: Return only jobs submitted by this user name.
+            created_after: Return only jobs created at or after this time: a `date`, a
+                `datetime`, or a string. A `datetime` without a time zone is treated as UTC.
+            created_before: Return only jobs created before this time. Takes the same types as
+                `created_after`.
+            page_size: Jobs per page, from 1 to 1,000.
+            page_token: The `next_page_token` from the previous page. Omit it for the first page.
+            max_retries: Retries after the first attempt, for this call only. If you omit it, the
+                client's setting applies.
+            request_timeout: Timeout in seconds, or a `(connect, read)` pair, for this call only.
+                If you omit it, the client's setting applies.
+
+        Returns:
+            A dictionary `{"jobs": [...], "next_page_token": ...}`.
+
+        Raises:
+            AccountJobListUnavailable: If account-level listing is unavailable for the account.
+                The call doesn't retry.
+            InvalidPageToken: If `page_token` isn't valid. Start again from the first page.
+            requests.HTTPError: If another request fails.
+            ValueError: If an argument isn't valid.
         """
         params = self._account_jobs_params(
             "list_jobs_page",
@@ -4101,14 +4413,19 @@ class CortexTrainingClient:
         return resp.json()
 
     def for_job(self, job: dict) -> "CortexTrainingClient":
-        """Return a client bound to ``job``'s schema, for per-job calls on a
-        row from :meth:`iter_jobs` or :meth:`list_jobs_page`.
+        """Return a client bound to a job's database and schema.
 
-        The new client borrows this client's session, auth and telemetry, its
-        ``client.surface`` included, so keep this one open and close it rather
-        than the new one. It never
-        creates the job's database, which exists and may be another role's: a
-        not-found answer surfaces as the HTTP error it is.
+        Use it for per-job calls on a job from `iter_jobs` or `list_jobs_page`. The new client
+        shares this client's session, so keep this client open, and close it rather than the new
+        one. `for_job` never creates the job's database: if it doesn't exist, per-job calls raise
+        an HTTP not-found error.
+
+        Args:
+            job: A job from `iter_jobs` or `list_jobs_page`, with `database_name` and
+                `schema_name`.
+
+        Returns:
+            A `CortexTrainingClient` for the job's database and schema.
         """
         client = type(self)(
             base_url=self.base_url,
@@ -4141,50 +4458,47 @@ class CortexTrainingClient:
 
     @_track_operation("cancel_job")
     def cancel_job(self, job_id: str) -> None:
+        """Cancel a job.
+
+        Repeating the call while the job is canceling or already canceled succeeds. For a job
+        that already failed or terminated, the call raises `requests.HTTPError`.
+
+        Args:
+            job_id: The job to cancel.
+        """
         # The REST API uses colon-action syntax: /{jobId}:cancel
         self._send("POST", f"{self._prefix}/{job_id}:cancel")
 
     @_track_operation("get_capacity")
     def get_capacity(self, hardware: Hardware | str | None = None) -> dict:
-        """Return the calling account's GPU ceiling and current usage.
+        """Return your account's GPU ceiling and current usage.
 
-        Backed by the account-scoped endpoint ``/cortex-training/capacity``
-        (not under ``/{job_id}``). The account is resolved server-side from the
-        caller's session — never from a request field — so a caller can only
-        ever read its own account's capacity. Optional ``hardware``
-        (:class:`Hardware`.H200 / .B200 / .B300) is sent as a query parameter and
-        scopes the numbers to that GPU type; omitted defaults to H200.
+        The result is a dictionary with these fields:
 
-        The returned dict always carries all six fields. The server emits
-        proto3 JSON, which omits zero/false fields (an account holding nothing
-        under a zero ceiling is literally ``{}``), so we fill in the documented
-        defaults:
+        - `has_reservation`: Whether `max_total_gpus` is a guaranteed commitment. When it's `False`,
+          the ceiling is a best-effort cap, so `available_gpus` is an upper bound.
+        - `max_total_gpus`: The account's GPU ceiling. `-1` means no ceiling, `0` means a quota of
+          zero, and a positive number is the limit.
+        - `reserved_gpus`: Deprecated. Use `max_total_gpus` instead.
+        - `in_use_gpus`: The number of GPUs held by the account's jobs that are starting or running.
+          Queued jobs aren't counted.
+        - `pending_gpus`: The number of GPUs requested by jobs that are waiting for capacity. They
+          count against your ceiling, so they reduce `available_gpus`.
+        - `available_gpus`: The number of GPUs a new job could start with right now:
+          `max_total_gpus - in_use_gpus - pending_gpus`, and never below `0`. When
+          `has_reservation` is `True`, it's also capped at what the hardware can schedule now, so
+          a shortfall in your reserved capacity shows here.
 
-        - ``has_reservation`` (bool): whether ``max_total_gpus`` is a
-          *guaranteed* commitment rather than a best-effort per-account cap.
-          When ``False`` the account draws on the shared pool, so
-          ``available_gpus`` is an upper bound.
-        - ``max_total_gpus`` (int): the account's ceiling — its commitment when
-          ``has_reservation``, else its per-account cap. ``-1`` means no
-          ceiling, ``0`` a real quota of zero, ``> 0`` the limit. This is the
-          canonical ceiling; prefer it over ``reserved_gpus``.
-        - ``reserved_gpus`` (int, **deprecated**): mirrors ``max_total_gpus``
-          when ``has_reservation`` is ``True``, else 0.
-        - ``in_use_gpus`` (int): GPUs the account holds — jobs in ``placing``,
-          ``initializing``, or ``running``. Queued work is *not* counted here;
-          it is in ``pending_gpus``.
-        - ``pending_gpus`` (int): GPUs requested by jobs still waiting for
-          capacity (``pending``). It claims quota, so it reduces
-          ``available_gpus``.
-        - ``available_gpus`` (int): what a new job could start with right now,
-          ``max_total_gpus - in_use_gpus - pending_gpus``, never below ``0``.
-          When ``has_reservation`` is ``True``, it is also capped at what the
-          hardware can currently schedule, so a shortfall in your reserved
-          capacity shows here.
+        To split `in_use_gpus` and `pending_gpus` by sub-job type or by submitter, use
+        `get_capacity_breakdown`.
 
-        See ``docs/reference/rest-api.md`` section 5.5 for the authoritative
-        field list, and :meth:`get_capacity_breakdown` to split ``in_use_gpus``
-        and ``pending_gpus`` by sub-job type or by submitting user.
+        Args:
+            hardware: The GPU type to report on: `Hardware.H200`, `Hardware.B200`, or
+                `Hardware.B300`, or the matching string. If you omit it, the numbers are for
+                `H200`.
+
+        Returns:
+            A dictionary with all of the fields above.
         """
         params = {}
         if hardware is not None:
@@ -4198,22 +4512,24 @@ class CortexTrainingClient:
         *,
         dimensions: Iterable[str] = ("job_type", "submitted_by"),
     ) -> dict:
-        """Return :meth:`get_capacity` plus a ``"breakdown"`` of its GPU usage.
+        """Return the same fields as `get_capacity`, plus a `breakdown` of GPU usage.
 
-        Sends the same single request as :meth:`get_capacity` with
-        ``?breakdown=`` naming ``dimensions``: ``"job_type"``,
-        ``"submitted_by"``, or both (the default). Any other value raises
-        ``ValueError`` before sending.
+        `breakdown` contains `job_count`, `truncated`, `unsupported_dimensions`, and
+        `by_job_type` or `by_submitted_by` for each requested dimension. Each of those has a
+        `status`, such as `OK`, `DISABLED`, or `UNAVAILABLE`, and `groups`. When the status is
+        `OK`, the groups add up to `in_use_gpus` and `pending_gpus`.
 
-        ``breakdown`` holds ``job_count``, ``truncated``,
-        ``unsupported_dimensions``, and ``by_job_type`` / ``by_submitted_by``
-        for the requested dimensions. Each has a ``status`` (``OK``,
-        ``DISABLED``, ``UNAVAILABLE``, or any newer value the server sends)
-        and ``groups``; under ``OK`` the groups add up to ``in_use_gpus`` and
-        ``pending_gpus``. Missing counts are 0; on non-``USER`` groups
-        ``submitted_by`` is ``None`` and ``is_caller`` is ``False``.
+        Args:
+            hardware: The GPU type to report on, as in `get_capacity`. If you omit it, the numbers
+                are for `H200`.
+            dimensions: How to split GPU usage: `"job_type"`, `"submitted_by"`, or both. The
+                default is both.
 
-        See ``docs/reference/rest-api.md`` section 5.4 for every field.
+        Returns:
+            The `get_capacity` fields and a `breakdown` field.
+
+        Raises:
+            ValueError: If a dimension isn't `"job_type"` or `"submitted_by"`.
         """
         dimensions = _capacity_breakdown_dimensions(dimensions)
         params = {}
@@ -4242,9 +4558,13 @@ class CortexTrainingClient:
 
     @_track_operation("get_experiment_run")
     def get_experiment_run(self, job_id: str) -> dict[str, str]:
-        """Return ``{experiment_name, experiment_run_name}`` for ``job_id``.
+        """Return the experiment and run names for a job.
 
-        Backed by the endpoint ``/cortex-training/{job_id}/experiment-run``.
+        Args:
+            job_id: The job to look up.
+
+        Returns:
+            A dictionary `{"experiment_name": ..., "experiment_run_name": ...}`.
         """
         resp = self._send("GET", f"{self._prefix}/{job_id}/experiment-run")
         return resp.json()
@@ -4347,13 +4667,15 @@ class CortexTrainingClient:
         return (self.database, self.schema)
 
     def warm_artifact_session(self, job_id: str) -> None:
-        """Get ready to download ``job_id``'s artifacts before asked to.
+        """Get ready to download a job's logs and metrics before you ask for them.
 
-        Reads the job's experiment run, which the client then keeps, and, while
-        :attr:`keep_artifact_sessions` is on and no session is kept for this
-        schema, logs one in and keeps it. The next download of the job then
-        starts with its first ``LIST``. Raises what reading the run or logging
-        in raises; nothing is kept then.
+        The call reads the job's experiment run, which the client then keeps. When
+        `keep_artifact_sessions` is on and no session is kept for this schema, it also signs in and
+        keeps one session. The next download of the job then starts faster. If reading the run or
+        signing in fails, the call raises that error and keeps nothing.
+
+        Args:
+            job_id: The job whose downloads to prepare.
         """
         self._experiment_run_uri(job_id)
         kept = self._kept_sessions
@@ -4363,7 +4685,14 @@ class CortexTrainingClient:
         kept.keep(key, self._open_experiment_artifact_connection())
 
     def create_snowpark_session(self) -> Any:
-        """Create a Snowpark ``Session`` using this client's PAT credentials."""
+        """Create a Snowpark `Session` that uses this client's programmatic access token.
+
+        The client must have been created with a programmatic access token. Install the
+        `snowflake-snowpark-python` package to use this call.
+
+        Returns:
+            A Snowpark `Session`.
+        """
         from snowflake.snowpark import Session
 
         return Session.builder.configs(self._snowflake_connection_kwargs()).create()
@@ -4477,21 +4806,19 @@ class CortexTrainingClient:
         sub_job_id: str | None = None,
         filename: str | None = None,
     ) -> list[dict[str, str]]:
-        """Download every log file under the job's experiment run stage.
+        """Return a job's execution log files in memory.
 
-        Returns a list of
-        ``{"sub_job_id", "filename", "artifact_uri", "content"}``
-        entries, one per object found under a ``_logs/<sub_job_id>/`` subtree
-        in the run's stage. Filenames such as ``execution.jsonl`` and
-        ``server.log`` are both included; bodies are decoded as UTF-8.
+        Files such as `execution.jsonl` and `server.log` are included, decoded as UTF-8. To save
+        large logs to disk instead, use `download_execution_logs`.
 
-        ``sub_job_id`` and ``filename``, when given, download only the files
-        of that sub-job and with that name (for example one sub-job's
-        ``execution.jsonl``); the rest are listed but not fetched.
+        Args:
+            job_id: The job to read logs from.
+            sub_job_id: Return only this sub-job's files.
+            filename: Return only files with this name, such as `execution.jsonl`.
 
-        ``artifact_uri`` is the logical ``snow://`` URI. Files are retrieved
-        through Snowflake's supported experiment artifact ``LIST``/``GET``
-        interface; no object-store credentials are exposed to the caller.
+        Returns:
+            A list with one dictionary per file, with `sub_job_id`, `filename`, `artifact_uri`,
+                and `content`.
         """
         values = self._operation_values()
         values.update(artifact="execution_logs", file_count=0, bytes_read=0, cancelled=False)
@@ -4628,25 +4955,24 @@ class CortexTrainingClient:
         progress: Callable[[str], None] | None = None,
         transfer_timeout_seconds: float | None = 300.0,
     ) -> list[dict[str, Any]]:
-        """Save every execution log file to ``<output_dir>/<sub_job_id>/<filename>``.
+        """Save a job's execution log files to `<output_dir>/<sub_job_id>/<filename>`.
 
-        Unlike :meth:`fetch_execution_logs`, file bodies are never held in
-        memory: each file is downloaded straight to disk, made readable only by
-        its owner (mode 0600), and then moved into place, so an interrupted
-        download leaves the previous copy untouched. A path present under both
-        ``_logs/`` and ``checkpoints/_logs/`` keeps the ``_logs/`` copy.
+        Files are written directly to disk without being held in memory. Each file is readable
+        only by its owner, and an interrupted download leaves any earlier copy untouched.
 
-        With ``resume=True`` a file whose staged size and checksum match the
-        copy saved by an earlier download is not fetched again. A staged log
-        file is replaced as a whole when it changes, so a changed file is
-        downloaded in full.
+        Args:
+            job_id: The job to download from.
+            output_dir: Directory to save files in, one subdirectory per sub-job.
+            resume: Skip files that haven't changed since the last download to `output_dir`.
+            sub_job_ids: Download only these sub-jobs.
+            progress: Called with one status line per file.
+            transfer_timeout_seconds: Time limit in seconds for each download attempt. Large files
+                get a longer limit. `None` turns the limit off.
 
-        ``transfer_timeout_seconds`` bounds each GET attempt, raised for a large
-        file to its size at 512 KiB/s. ``progress`` gets one status line per
-        file, ending in ``"\\n"``. Each
-        result is ``{"sub_job_id", "filename", "artifact_uri", "saved_path",
-        "bytes", "unchanged"}``, where ``unchanged`` means resume kept the saved
-        copy.
+        Returns:
+            A list with one dictionary per file, with `sub_job_id`, `filename`, `artifact_uri`,
+                `saved_path`, `bytes`, and `unchanged`. `unchanged` is `True` when `resume` kept the
+                saved copy.
         """
         # Before the argument checks, so a call they refuse still sends these fields.
         values = self._operation_values()
@@ -6153,40 +6479,46 @@ class CortexTrainingClient:
         preview_seconds: float | None = None,
         on_preview: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
-        """Reconstruct sealed console artifacts into one file per sub-job.
+        """Save each sub-job's console output to `<output_dir>/<sub_job_id>/stdout.log`.
 
-        Chunks are fetched with up to ``max_workers`` concurrent GETs (default
-        16). ``resume=True`` appends chunks that are not already recorded beside
-        the file, and continues an interrupted download; progress is saved as
-        the download runs whether or not ``resume`` is set.
+        Callbacks run on the calling thread. If a callback raises an exception, the download
+        stops, keeps the parts it has saved, and re-raises the exception. To cancel a download,
+        raise `DownloadCancelled` from a callback. A sub-job named in `sub_job_ids` that has
+        nothing to download raises `NoChunksError`, a `ValueError`. Don't run two downloads
+        into the same `output_dir` at once.
 
-        ``progress`` receives status updates without a trailing newline, then
-        ``"\\n"`` when that sub-job finishes or fails. A status that needs no
-        updating (nothing new, no chunks) arrives as one message ending in a
-        newline. ``on_chunk`` is called as
-        ``on_chunk(sub_job_id, chunks_done, chunks_total, bytes)`` when a
-        sub-job starts and after each appended chunk; ``chunks_done ==
-        chunks_total`` arrives only after that sub-job's file is committed.
-        Both run on the calling thread. An error raised by either stops the
-        download, keeps the chunks already written for ``resume=True``, and is
-        re-raised; raise :class:`DownloadCancelled` to cancel without the call
-        being counted as a failure. The return value is unchanged.
-        ``sub_job_ids`` limits the download to those sub-jobs; naming one also
-        limits the listing to its chunks rather than the whole run's. A chunk that
-        will not decompress is downloaded once more and then skipped; it is listed
-        in that sub-job's ``skipped_chunks`` and ``warnings``. ``strict=True``
-        raises instead. While the job is running, a sub-job whose newest chunk is
-        older than ``stale_after_seconds`` (default 600; ``None`` disables) gets
-        a warning that uploads may be stalled; the download still completes.
-        A LIST or GET attempt still running after ``transfer_timeout_seconds``
-        (default 300; ``None`` disables) is abandoned and retried. Two
-        downloads of the same output directory at once are unsupported.
+        Args:
+            job_id: The job to download from.
+            output_dir: Directory to save files in, one subdirectory per sub-job.
+            resume: Download only what isn't already saved in `output_dir`, and continue an
+                interrupted download.
+            max_workers: How many parts to fetch in parallel. The default is 16.
+            progress: Called with status updates. A sub-job's last update ends with a newline.
+            on_chunk: Called as `on_chunk(sub_job_id, done, total, bytes)` when a sub-job starts and
+                after each part is saved.
+            sub_job_ids: Download only these sub-jobs.
+            strict: Raise an error for a part that can't be read, instead of skipping it and
+                listing it in the result's `skipped_chunks` and `warnings`.
+            stale_after_seconds: While the job is running, warn about a sub-job whose newest output
+                is older than this. `None` turns the warning off.
+            transfer_timeout_seconds: Abandon and retry a request that's still running after this
+                many seconds. `None` turns the limit off.
 
-        ``preview_seconds`` and ``on_preview`` (given together) give the first
-        sub-job named in ``sub_job_ids`` its newest output before the rest, as
-        :meth:`download_metrics` describes for metrics: the console's last
-        ``preview_seconds`` (and a little more) in one file. That sub-job is
-        written first; without ``sub_job_ids`` there is no preview.
+            preview_seconds: With `on_preview`, save the last `preview_seconds` of output for the
+                first sub-job in `sub_job_ids` before the rest.
+            on_preview: Called with the preview file's details: `sub_job_id`, `path`, `chunk_count`,
+                `first_artifact_uri`, and `last_artifact_uri`. The file at `path` is deleted when
+                the call returns.
+
+        Returns:
+            A list in sub-job ID order, with one dictionary per sub-job: `sub_job_id`, `filename`,
+                `saved_path`, `chunk_count`, `first_artifact_uri`, and `last_artifact_uri`. A sub-job
+                with skipped parts also has `skipped_chunks` and `warnings`.
+
+        Raises:
+            NoChunksError: If a sub-job named in `sub_job_ids` has nothing saved yet.
+            DownloadCancelled: If a callback raises it to cancel the download. The call isn't
+                counted as a failure.
         """
         named = None if sub_job_ids is None or isinstance(sub_job_ids, (str, bytes)) else list(sub_job_ids)
         return self._download_gzip_artifacts(
@@ -6230,33 +6562,47 @@ class CortexTrainingClient:
         preview_seconds: float | None = None,
         on_preview: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
-        """Reconstruct staged GPU metric chunks into one JSONL file per sub-job.
+        """Save each sub-job's GPU metrics to `<output_dir>/<sub_job_id>/gpu.jsonl`.
 
-        Accepts the same ``resume``, ``max_workers``, ``progress``, ``on_chunk``,
-        ``sub_job_ids``, ``strict``, ``stale_after_seconds``, and
-        ``transfer_timeout_seconds`` options as
-        :meth:`download_stdout_logs`. Sub-jobs named in ``priority`` are
-        downloaded first, in that order, then the rest in id order; the
-        returned list is in id order either way. ``on_commit`` is called, on
-        the calling thread, with a copy of each sub-job's result entry once its
-        file is committed; an error it raises stops the download as one from
-        ``on_chunk`` does. While the job is running, a sub-job with
-        saved stdout but no metrics gets a result entry with ``chunk_count`` 0,
-        ``saved_path`` ``None``, and a warning. Two downloads
-        of the same output directory at once are unsupported.
+        It takes the same options as `download_stdout_logs`, plus `priority` and `on_commit`.
+        While the job is running, a sub-job that has console output but no metrics yet gets a
+        result entry with no saved file and a warning. A sub-job named in `sub_job_ids` that
+        has nothing to download raises `NoChunksError`, a `ValueError`.
 
-        With ``preview_seconds`` and ``on_preview`` (given together), the first
-        sub-job in ``priority`` gets its newest samples before the rest: the
-        chunks from ``preview_seconds`` before its newest one (and a little
-        more, since a chunk's name gives the time it starts) are fetched first,
-        and ``on_preview`` is called, on the calling thread, with
-        ``sub_job_id``, ``path``, ``chunk_count``, ``first_artifact_uri`` and
-        ``last_artifact_uri``. The file at ``path`` holds those chunks' rows in
-        time order and is removed once ``on_preview`` returns; an error it
-        raises stops the download as one from ``on_commit`` does. Those chunks
-        are not fetched again, so the download makes no more requests. There is
-        no preview when they are most of what the sub-job has new (a first
-        download of a short job, or a resume), or when none of them can be read.
+        Args:
+            job_id: The job to download from.
+            output_dir: Directory to save files in, one subdirectory per sub-job.
+            resume: Download only what isn't already saved in `output_dir`, and continue an
+                interrupted download.
+            max_workers: How many parts to fetch in parallel. The default is 16.
+            progress: Called with status updates. A sub-job's last update ends with a newline.
+            on_chunk: Called as `on_chunk(sub_job_id, done, total, bytes)` when a sub-job starts and
+                after each part is saved.
+            sub_job_ids: Download only these sub-jobs.
+            strict: Raise an error for a part that can't be read, instead of skipping it and
+                listing it in the result's `skipped_chunks` and `warnings`.
+            stale_after_seconds: While the job is running, warn about a sub-job whose newest output
+                is older than this. `None` turns the warning off.
+            transfer_timeout_seconds: Abandon and retry a request that's still running after this
+                many seconds. `None` turns the limit off.
+            priority: Sub-jobs to download first, in this order. The rest follow in ID order, and
+                the result is always in ID order.
+            on_commit: Called with a copy of each sub-job's result entry once its file is saved.
+            preview_seconds: With `on_preview`, save the last `preview_seconds` of output for the
+                first sub-job in `priority` before the rest.
+            on_preview: Called with the preview file's details: `sub_job_id`, `path`, `chunk_count`,
+                `first_artifact_uri`, and `last_artifact_uri`. The file at `path` is deleted when
+                the call returns.
+
+        Returns:
+            A list in sub-job ID order, with one dictionary per sub-job: `sub_job_id`, `filename`,
+                `saved_path`, `chunk_count`, `first_artifact_uri`, and `last_artifact_uri`. A sub-job
+                with skipped parts also has `skipped_chunks` and `warnings`.
+
+        Raises:
+            NoChunksError: If a sub-job named in `sub_job_ids` has nothing saved yet.
+            DownloadCancelled: If a callback raises it to cancel the download. The call isn't
+                counted as a failure.
         """
         return self._download_gzip_artifacts(
             job_id,
@@ -6298,21 +6644,42 @@ class CortexTrainingClient:
         priority: Iterable[str] = (),
         on_commit: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
-        """Reconstruct staged training-metric chunks into one JSONL file per sub-job.
+        """Save each training sub-job's training metrics to `<output_dir>/<sub_job_id>/training.jsonl`.
 
-        The training metrics a job's ``/fwd-bwd`` and ``/step`` calls returned,
-        written by the zone to its own file and staged beside the GPU chunks as
-        ``training.*.gz``, reconstructed as
-        ``<output_dir>/<sub_job_id>/training.jsonl``. Takes the same options as
-        :meth:`download_metrics`, and the two can share an output directory:
-        each writes its own file and manifest.
+        The training metrics are the values that `forward_backward` and `step` return. The call
+        takes the same options as `download_metrics`, and both can write to the same
+        `output_dir`. Sub-jobs without training metrics, such as sampling sub-jobs, are left out
+        of the result without a warning, and a sub-job you name in `sub_job_ids` that has none is
+        left out instead of raising an error.
 
-        Only training sub-jobs have these rows, and only where the deployment
-        saves them (a job opts out with ``training_config.save_training_metrics``
-        false), so a sub-job without them is not warned about, unlike a sub-job
-        with no GPU metrics. For the same reason, a sub-job named in
-        ``sub_job_ids`` without them is left out of the result rather than
-        raising :class:`NoChunksError`.
+        Args:
+            job_id: The job to download from.
+            output_dir: Directory to save files in, one subdirectory per sub-job.
+            resume: Download only what isn't already saved in `output_dir`, and continue an
+                interrupted download.
+            max_workers: How many parts to fetch in parallel. The default is 16.
+            progress: Called with status updates. A sub-job's last update ends with a newline.
+            on_chunk: Called as `on_chunk(sub_job_id, done, total, bytes)` when a sub-job starts and
+                after each part is saved.
+            sub_job_ids: Download only these sub-jobs.
+            strict: Raise an error for a part that can't be read, instead of skipping it and
+                listing it in the result's `skipped_chunks` and `warnings`.
+            stale_after_seconds: Accepted for consistency with `download_metrics`. This download
+                never warns about stalled uploads.
+            transfer_timeout_seconds: Abandon and retry a request that's still running after this
+                many seconds. `None` turns the limit off.
+            priority: Sub-jobs to download first, in this order. The rest follow in ID order, and
+                the result is always in ID order.
+            on_commit: Called with a copy of each sub-job's result entry once its file is saved.
+
+        Returns:
+            A list in sub-job ID order, with one dictionary per sub-job: `sub_job_id`, `filename`,
+                `saved_path`, `chunk_count`, `first_artifact_uri`, and `last_artifact_uri`. A sub-job
+                with skipped parts also has `skipped_chunks` and `warnings`.
+
+        Raises:
+            DownloadCancelled: If a callback raises it to cancel the download. The call isn't
+                counted as a failure.
         """
         return self._download_gzip_artifacts(
             job_id,
@@ -6363,7 +6730,22 @@ class CortexTrainingClient:
         *,
         log_type: str = "execution",
     ) -> dict[str, Any]:
-        """Download deployment logs without exposing backing sub-job identity."""
+        """Download a deployment's logs into `output_dir`.
+
+        Use these logs to find out why a deployment `FAILED`.
+
+        Args:
+            deployment_id: The deployment ID, in the form `sf-ct-<UUID>`.
+            output_dir: Directory to save the log files in. It's created if it doesn't exist.
+            log_type: `"execution"` (the default) or `"stdout"`.
+
+        Returns:
+            A dictionary `{"deployment": ..., "logs": [...]}`. `logs` lists each saved file's
+                `filename` and `saved_path`, plus `chunk_count` for `"stdout"`.
+
+        Raises:
+            ValueError: If `log_type` isn't `"execution"` or `"stdout"`.
+        """
         if log_type not in {"execution", "stdout"}:
             raise ValueError("log_type must be either 'execution' or 'stdout'")
         job_id = _job_id_from_deployment_id(deployment_id)
@@ -6411,7 +6793,16 @@ class CortexTrainingClient:
     def download_model_deployment_metrics(
         self, deployment_id: str, output_dir: str | os.PathLike[str]
     ) -> dict[str, Any]:
-        """Download deployment metrics without exposing backing sub-job identity."""
+        """Download a deployment's metrics into `output_dir`.
+
+        Args:
+            deployment_id: The deployment ID, in the form `sf-ct-<UUID>`.
+            output_dir: Directory to save the metrics files in. It's created if it doesn't exist.
+
+        Returns:
+            A dictionary `{"deployment": ..., "metrics": [...]}`. `metrics` lists each saved
+                file's `filename`, `saved_path`, and `chunk_count`.
+        """
         job_id = _job_id_from_deployment_id(deployment_id)
         # Refuse IDs whose backing job is not a model deployment.
         self._get_model_deployment_job(job_id)
@@ -6708,7 +7099,18 @@ class CortexTrainingClient:
 
     @_track_operation("forward_backward")
     def forward_backward(self, job_id: str, data: bytes) -> str:
-        """Submit a forward+backward pass. Returns request_id."""
+        """Submit a forward and backward pass, and return its request ID.
+
+        Poll for the result with `poll_request`.
+
+        Args:
+            job_id: The job whose training sub-job runs the pass.
+            data: The batch to train on, as bytes. Build it with `build_forward_backward_payload`
+                or `serialize_forward_backward_args`.
+
+        Returns:
+            The request ID.
+        """
         self._fwd_bwd_send_count += 1
         call = self._fwd_bwd_send_count
         debug_context = {
@@ -6797,60 +7199,43 @@ class CortexTrainingClient:
     ) -> str | GenerateHandle:
         """Submit a generate request to a sampling sub-job.
 
-        Returns a :class:`GenerateHandle` when ``wait_seconds`` is not
-        ``None``; with ``None`` (the default) it returns the request_id.
+        Without `wait_seconds`, the call returns the request ID. Poll for the result with
+        `poll_request`. With `wait_seconds`, the call returns a `GenerateHandle`: the server holds
+        the request for up to that many seconds and replies with the result if the generation
+        finishes in time. If the generation fails or is canceled during the wait, the call raises
+        the error that `poll_request` raises. Large requests are split across several HTTP
+        requests automatically.
 
-        The typed fields are serialized as a DSSST1 safetensors frame and sent
-        as ``application/octet-stream``. Oversized frames are byte-chunked
-        across multiple POSTs; the final POST returns the pollable request id.
-        Poll with :meth:`poll_request`.
-
-        Prompt-length validation is asymmetric by input type:
-
-        * **Pre-tokenized prompts** are checked client-side against the
-          sampling sub-job's ``max_seq_len`` and fail fast with a
-          ``ValueError`` when ``len(prompt) >= max_seq_len`` — the token count
-          is exact, so this never rejects a prompt vLLM would accept. A flat
-          ``list[int]``, and a bare 1-D tensor, each count as one prompt.
-        * **String prompts** are *not* validated here. Counting their tokens
-          would require replicating the server tokenizer (including special
-          tokens), so an over-long string instead fails server-side in vLLM
-          with a ``maximum model length`` error rather than client-side.
-
-        ``wait_seconds`` asks the server to hold the call for up to that many
-        whole seconds and reply with the result if the generation ends in
-        time. The server caps the wait, and holds the call only if it has
-        waiting enabled; if not, it answers right away with just the request
-        id, and the retry rule below still applies. A finished result in the
-        reply makes the handle's ``result`` what :meth:`poll_request` would
-        return; it is ``None`` when the generation was still running, the
-        server did not wait, or the reply could not be read whole, and the
-        caller polls ``request_id`` as usual. A chunked result counts as not
-        whole: the chunks that came with the reply are dropped, and
-        :meth:`poll_request` fetches them all again starting with the first.
-        A generation that failed or was cancelled
-        within the wait raises the error :meth:`poll_request` raises. ``0``
-        sends no wait and returns a handle with no result. Use a ``result``
-        that is set rather than polling again: like a second poll of any
-        generate, a re-poll leaves the tensors under ``results`` as tensors,
-        and the server may have dropped the result by then.
-
-        A waiting submit is retried only on failures that come before any
-        generation starts: a connection that could not be opened (refused or
-        connect timeout; a TLS failure does not count), and HTTP 429, 404, 409,
-        307 or 308. A job-not-found 404 is still retried only within 120 seconds
-        of this client creating the job, and a chunk-group 409 is not retried. A
-        5xx, a read timeout, or a reset after send is raised, because the
-        generation may already be running and a retry would run it twice.
+        A prompt given as a list of token IDs is checked against the sampling sub-job's
+        `max_seq_len` before the request is sent, and raises `ValueError` if it has `max_seq_len`
+        tokens or more. The client doesn't check string prompts: an over-long string prompt fails on
+        the server with a `maximum model length` error.
 
         Args:
-            sub_job_id: Optional. Which sampling sub-job runs the request, e.g.
-                ``"{job_id}:sampling:1"``; discover the ids from
-                :meth:`get_job`'s ``sub_jobs``. Sent as a query parameter, since
-                the body is an opaque frame. If omitted, no ``sub_job_id`` is
-                sent and the server chooses the sub-job; currently that is the
-                job's only sampling sub-job, and a job with several rejects the
-                request and lists the valid ids.
+            job_id: The job that owns the sampling sub-job.
+            prompts: Prompts, each a string or a list of token IDs. A flat list of integers is read
+                as one prompt. For several pre-tokenized prompts, use a nested list such as
+                `[[1, 2, 3], [4, 5]]`.
+            sampling_params: One dictionary for every prompt, or a list of dictionaries or `None`
+                values aligned with `prompts`.
+            routing_key: A key that keeps related prompts on the same replica: one string, or a list
+                of strings or `None` values aligned with `prompts`.
+            strict: Whether `routing_key` affinity is strict.
+            sub_job_id: The sampling sub-job that runs the request, for example
+                `"{job_id}:sampling:1"`. Get the IDs from the `sub_jobs` field that `get_job`
+                returns. If you omit it and the job has more than one sampling sub-job, the request
+                is rejected with a list of valid IDs.
+            wait_seconds: How many whole seconds, 0 or more, the server can hold the request before
+                it replies. The server limits the wait to 40 seconds. If the server doesn't wait,
+                it replies right away and you poll for the result. If you omit it, the call returns
+                without waiting.
+
+        Returns:
+            The request ID, or a `GenerateHandle` when you pass `wait_seconds`.
+
+        Raises:
+            ValueError: If a token-ID prompt is too long, or `wait_seconds` isn't a whole number
+                of seconds that's 0 or more.
         """
         if wait_seconds is not None and (
             isinstance(wait_seconds, bool)
@@ -6918,24 +7303,24 @@ class CortexTrainingClient:
         strict: bool | None = None,
         sub_job_id: str | None = None,
     ) -> dict:
-        """Start a streaming generate request. Returns the response body.
+        """Start a streaming generate request, and return the server's response.
 
-        The body is the same DSSST1 safetensors frame :meth:`generate` sends,
-        under ``application/octet-stream``. Unlike ``generate`` it is never
-        split into request chunks: the frame goes out in one POST and must fit
-        under 60 MiB.
-
-        Progress is read with :meth:`get_request_status` using the returned
-        ``request_id``. Cancellation uses :meth:`cancel_request`.
-
-        Prompt-length validation matches :meth:`generate`: pre-tokenized
-        prompts are checked client-side against the sampling sub-job's
-        ``max_seq_len`` and fail fast, while over-long string prompts are left
-        to fail server-side in vLLM (see :meth:`generate`).
+        The request is sent in one HTTP request, so it must fit under 60 MiB. Prompts are checked
+        as `generate` checks them. Read progress with `get_request_status` and the returned
+        `request_id`. Cancel with `cancel_request`.
 
         Args:
-            sub_job_id: Optional. Which sampling sub-job runs the request; see
-                :meth:`generate` for the format and when it may be omitted.
+            job_id: The job that owns the sampling sub-job.
+            prompts: Prompts, each a string or a list of token IDs, as for `generate`.
+            sampling_params: One dictionary for every prompt, or a list of dictionaries or `None`
+                values aligned with `prompts`.
+            routing_key: A key that keeps related prompts on the same replica: one string, or a list
+                of strings or `None` values aligned with `prompts`.
+            strict: Whether `routing_key` affinity is strict.
+            sub_job_id: The sampling sub-job that runs the request, as for `generate`.
+
+        Returns:
+            The server's response, a dictionary that includes the `request_id`.
         """
         body = self._build_generate_frame(
             "generate_stream", job_id, prompts, sampling_params, routing_key, strict, sub_job_id
@@ -6952,7 +7337,18 @@ class CortexTrainingClient:
 
     @_track_operation("step")
     def step(self, job_id: str, learning_rate: float | None = None) -> str:
-        """Submit an optimizer step. Returns request_id."""
+        """Submit an optimizer step, and return its request ID.
+
+        Poll for the result with `poll_request`.
+
+        Args:
+            job_id: The job whose training sub-job takes the step.
+            learning_rate: The learning rate for this step. If you omit it, the job's optimizer
+                setting applies.
+
+        Returns:
+            The request ID.
+        """
         body: dict = {}
         if learning_rate is not None:
             body["learning_rate"] = learning_rate
@@ -6968,7 +7364,23 @@ class CortexTrainingClient:
         checkpoint_id: str | None = None,
         checkpoint_type: str | None = None,
     ) -> str:
-        """Submit a checkpoint save. Returns request_id."""
+        """Submit a checkpoint save, and return its request ID.
+
+        Poll for the result with `poll_request`.
+
+        Args:
+            job_id: The job to save a checkpoint of.
+            checkpoint_id: A name for the checkpoint. The server assigns the checkpoint's ID, so
+                this value might not be used. Find the ID with `list_checkpoints`.
+            checkpoint_type: `"resumable"`, which holds the training state and weights, or
+                `"weights-only"`, which holds only the model weights. The default is `"resumable"`.
+
+        Returns:
+            The request ID.
+
+        Raises:
+            ValueError: If `checkpoint_type` isn't `"resumable"` or `"weights-only"`.
+        """
         body: dict = {}
         if checkpoint_id is not None:
             body["checkpoint_id"] = checkpoint_id
@@ -6989,49 +7401,24 @@ class CortexTrainingClient:
         *,
         target_sub_job_id: str | None = None,
     ) -> str:
-        """Submit a checkpoint load into an existing job. Returns request_id.
+        """Submit a checkpoint load into an existing job, and return its request ID.
+
+        Poll for the result with `poll_request`. If the target sub-job has a different number of
+        GPUs (`n_gpus`) than the job the checkpoint was saved from, you must have created the job
+        with `load_optimizer_states=False`, because the optimizer states can't be resized. That
+        setting can't be changed after you create the job.
 
         Args:
             job_id: The job to load the checkpoint into.
-            checkpoint_id: Checkpoint identifier (from a prior save).
-            source_job_id: Optional. Load from another job's checkpoint store.
-            target_sub_job_id: Optional. Route the load to a specific training
-                sub-job. Format: ``"{job_id}:training:{index}"``. Omit to use
-                the session's default training sub-job.
+            checkpoint_id: The checkpoint to load, from a previous `save`.
+            source_job_id: Load the checkpoint from another job's checkpoints.
+            target_sub_job_id: The training sub-job to load into, in the form
+                `"{job_id}:training:{index}"`. A job has at most one training sub-job, so if you omit
+                it, the load goes to that sub-job. The call fails if the ID isn't a training sub-job
+                of this job.
 
         Returns:
-            request_id for polling via ``poll_request()``.
-
-        **When to use target_sub_job_id:**
-
-        A job has at most one training sub-job, so omitting this routes to that
-        sub-job. Pass it when you want explicit routing rather than relying on
-        the server's default resolution.
-
-        **Discovering sub-job IDs:**
-
-        .. code-block:: python
-
-            job = client.get_job(job_id)
-            for sj in job["sub_jobs"]:
-                if sj["job_type"] == "training":
-                    sub_job_id = sj["sub_job_id"]
-                    n_gpus = sj["training_config"]["n_gpus"]
-                    print(f"Training sub-job {sub_job_id}: {n_gpus} GPUs")
-
-        **DP size compatibility:**
-
-        If the target sub-job has a different DP size (``n_gpus``) than the
-        checkpoint was saved from, you **must** have created the job with
-        ``load_optimizer_states=False`` in the ``SubJobConfig``. The optimizer
-        states are DP-sharded and cannot be resized. This setting is configured
-        at job creation time and cannot be changed at runtime.
-
-        **Server validation:**
-
-        The server validates that ``target_sub_job_id`` belongs to this session
-        (returns 400 if not) and is a training sub-job (returns 501 for
-        non-training sub-jobs like sampling).
+            The request ID.
         """
         body: dict = {"checkpoint_id": checkpoint_id}
         if source_job_id is not None:
@@ -7161,13 +7548,19 @@ class CortexTrainingClient:
         sub_job_id: str | None = None,
         sub_job_type: str | None = None,
     ) -> dict:
-        """Submit a generic forward operation. Returns the response body.
+        """Submit a forward pass, and return the response.
 
-        A ``bytes`` payload is a DSSST1 frame; it is byte-chunked across as many
-        ``/operation`` POSTs as the JSON body ceiling requires and reassembled by
-        the backend. Only the final POST returns the pollable ``request_id``;
-        poll it with :meth:`poll_request`. Dict payloads stay a single plain
-        ``/operation`` POST.
+        Poll for the result with `poll_request` and the `request_id` in the response.
+
+        Args:
+            job_id: The job to run the pass on.
+            payload: The batch, as bytes built like a `forward_backward` payload, or a dictionary.
+            sub_job_id: The sub-job that runs the pass.
+            sub_job_type: The type of the sub-job that runs the pass, such as `training`. Use it
+                instead of `sub_job_id` when the job has only one sub-job of that type.
+
+        Returns:
+            The server's response, a dictionary that includes the `request_id`.
         """
         if isinstance(payload, (bytes, bytearray, memoryview)):
             body = self._post_operation_request_chunks(
@@ -7198,7 +7591,17 @@ class CortexTrainingClient:
         sub_job_id: str | None = None,
         sub_job_type: str | None = None,
     ) -> dict:
-        """Compatibility alias for :meth:`forward`."""
+        """Alias for `forward`.
+
+        Args:
+            job_id: The job to run the pass on.
+            payload: The batch, as bytes built like a `forward_backward` payload, or a dictionary.
+            sub_job_id: The sub-job that runs the pass.
+            sub_job_type: The type of the sub-job that runs the pass. See `forward`.
+
+        Returns:
+            The server's response, a dictionary that includes the `request_id`.
+        """
         return self.forward(
             job_id,
             payload=payload,
@@ -7214,7 +7617,17 @@ class CortexTrainingClient:
         sub_job_id: str | None = None,
         sub_job_type: str | None = None,
     ) -> dict:
-        """Compatibility alias for :meth:`forward`."""
+        """Alias for `forward`.
+
+        Args:
+            job_id: The job to run the pass on.
+            payload: The batch, as bytes built like a `forward_backward` payload, or a dictionary.
+            sub_job_id: The sub-job that runs the pass.
+            sub_job_type: The type of the sub-job that runs the pass. See `forward`.
+
+        Returns:
+            The server's response, a dictionary that includes the `request_id`.
+        """
         return self.forward(
             job_id,
             payload=payload,
@@ -7236,41 +7649,43 @@ class CortexTrainingClient:
         data: Sequence[Any],
         loss_fn: Callable[[Any, list[Any]], tuple[Any, Mapping[str, float]]],
     ) -> dict:
-        """Accumulate the gradient of a loss computed in this process. Blocks until done.
+        """Train on a loss that you compute in your own process, and wait for the result.
 
-        Each item of ``data`` is a token-id sequence (a list, or a 1-D tensor or
-        array) or a mapping with ``"input_ids"`` and any other keys.
-        ``loss_fn(data, logprobs)`` gets ``data`` unchanged and one
-        differentiable float32 tensor per item, of length
-        ``len(input_ids) - 1``, whose element ``j`` is the log-probability of
-        token ``j + 1`` given the tokens before it. It returns
-        ``(loss, metrics)`` with ``loss``, the custom loss ``L``, a scalar tensor.
+        The call gets the log-probabilities of your data from the model, runs `loss_fn` on them
+        locally, and trains the model on the gradient of the loss it returns. Call `step`
+        afterward to apply the gradient. Don't run `step` or `load` on the job while this call is
+        running.
 
-        A forward pass on the training sub-job supplies the log-probabilities.
-        The client takes ``g = dL/dlogprobs`` with autograd and sends a
-        forward/backward request with the server loss
-        ``weighted_cross_entropy`` and weights ``w = -g``. That loss trains
-        ``L_surrogate = -sum(w * logprobs)``, so the model gradient is that of
-        ``L``; call :meth:`step` to apply it. The weights must not change
-        between the two passes, so do not run a ``step`` or ``load`` on the job
-        concurrently.
+        The call raises `ValueError` for malformed `data`, a loss that isn't a scalar, or a
+        metric that isn't a number. It raises `RuntimeError` for a loss that doesn't depend on
+        the log-probabilities, a loss or gradient that isn't finite, or a service that doesn't
+        support custom losses yet. Except for the service error, these are raised before the
+        backward pass is sent.
 
-        Malformed ``data``, a non-scalar loss, a loss that does not depend on
-        the log-probabilities, a non-finite loss or gradient, and non-numeric
-        metrics raise before the forward/backward request. A service without
-        ``weighted_cross_entropy`` raises a ``RuntimeError`` saying it does not
-        support custom losses yet.
+        `loss_fn(data, logprobs)` receives `data` unchanged, and `logprobs`, a list with one float32
+        tensor per item. For an item with `input_ids`, its tensor has length `len(input_ids) - 1`,
+        and element `j` is the log-probability of token `j + 1` given the tokens before it. Each
+        tensor is differentiable. `loss_fn` returns `(loss, metrics)`, where `loss` is a scalar
+        tensor computed from `logprobs` and `metrics` maps names to numbers.
 
-        Returns the forward/backward result with ``loss`` (the value of ``L``),
-        ``metrics`` updated with ``loss_fn``'s metrics (a name the server also
-        reports is replaced, with a warning), ``logprobs`` (what ``loss_fn``
-        saw, detached), and, when the server returns the backward pass's own
-        log-probabilities, ``logprob_max_abs_diff``: the largest gap between the
-        two passes over all predicted tokens. If those log-probabilities are
-        malformed, it is omitted with a warning, since the gradient has already
-        been accumulated. The server's
-        ``metrics["weighted_cross_entropy_objective_sum"]`` is ``L_surrogate``,
-        not ``L``.
+        Args:
+            job_id: The job whose training sub-job trains on the loss.
+            data: The training items. Each is a sequence of token IDs (a list, a 1-D tensor, or an
+                array), or a mapping with `"input_ids"` and any other keys that the loss needs.
+            loss_fn: The function that computes the loss, as described above.
+
+        Returns:
+            The forward and backward result, with these changes: `loss` is the value of your loss,
+                `metrics` also holds the metrics from `loss_fn`, and `logprobs` holds what `loss_fn`
+                received, detached from the graph. A metric from `loss_fn` replaces a server metric of
+                the same name, with a warning. When the server returns the log-probabilities of the
+                backward pass, `logprob_max_abs_diff` is the largest difference between the two passes
+                over all predicted tokens.
+
+        Raises:
+            ValueError: If `data` is malformed, the loss isn't a scalar, or a metric isn't a number.
+            RuntimeError: If the loss doesn't depend on the log-probabilities, the loss or its
+                gradient isn't finite, or the service doesn't support custom losses yet.
         """
         tokens = custom_loss.item_tokens(data)
         logprobs = self._forward_logprobs(job_id, tokens)
@@ -7315,33 +7730,31 @@ class CortexTrainingClient:
         sub_job_id: str | None = None,
         sub_job_type: str | None = None,
     ) -> str:
-        """Sync model weights from a training sub-job into one or more sampling
-        sub-jobs (used in RL training loops). Returns request_id.
+        """Copy model weights from a training sub-job to one or more sampling sub-jobs.
 
-        Multi-sub-job sessions require the operation envelope to include a
-        routing hint; by default the operation is routed through the source
-        training sub-job.
+        Use it in reinforcement learning loops to keep sampling in step with training. Poll for the
+        result with `poll_request`.
 
         Args:
-            job_id: The job owning both sub-jobs.
-            source_sub_job_id: Training sub-job to read weights from, e.g.
-                ``f"{job_id}:training:0"``.
-            target_sub_job_ids: Sampling sub-jobs to update, e.g.
-                ``[f"{job_id}:sampling:0"]``.
-            weight_format: ``"vllm"`` (server default) or ``"hf"`` for full
-                weights, or ``"lora"`` to broadcast only the adapter tensors.
-            bucket_size: Optional transfer-bucket size in bytes. Increase this
-                when one model tensor exceeds the server default bucket.
+            job_id: The job that owns both sub-jobs.
+            source_sub_job_id: The training sub-job to read weights from, for example
+                `"{job_id}:training:0"`.
+            target_sub_job_ids: The sampling sub-jobs to update, for example
+                `["{job_id}:sampling:0"]`.
+            weight_format: `"vllm"` (the default) or `"hf"` to copy full weights, or `"lora"` to
+                copy only the adapter tensors.
+            bucket_size: The size in bytes of each transfer bucket. Increase it when one model
+                tensor is larger than the default bucket. Must be greater than 0.
+            sub_job_id: The sub-job that routes the request. If you omit it, the request is routed
+                through `source_sub_job_id`.
+            sub_job_type: The type of the sub-job that routes the request. See `sub_job_id`. The
+                default is `training`.
 
-        Example::
+        Returns:
+            The request ID.
 
-            request_id = client.weight_sync(
-                job_id,
-                source_sub_job_id=f"{job_id}:training:0",
-                target_sub_job_ids=[f"{job_id}:sampling:0"],
-                weight_format="lora",
-            )
-            client.poll_request(job_id, request_id)
+        Raises:
+            ValueError: If `bucket_size` isn't greater than 0.
         """
         body = {
             "source_sub_job_id": source_sub_job_id,  # training
@@ -7373,7 +7786,25 @@ class CortexTrainingClient:
         sub_job_id: str | None = None,
         sub_job_type: str | None = None,
     ) -> dict:
-        """Bootstrap router replay from one sub-job to another."""
+        """Set up router replay between a sampling sub-job and a training sub-job.
+
+        Router replay lets a training sub-job reuse the expert routing that a sampling sub-job
+        chose. Read `sampling_job_id` from the result, and use it when you encode replay
+        coordination in later forward and backward passes. If the response has a `request_id`, poll
+        it with `poll_request` first.
+
+        Args:
+            job_id: The job that owns both sub-jobs.
+            source_sub_job_id: The sampling sub-job to take routing from.
+            target_sub_job_id: The training sub-job to replay routing in.
+            max_cache_bytes: The most bytes to use for the replay cache.
+            sub_job_id: The sub-job that receives the call. For a job with both types of sub-job,
+                pass `target_sub_job_id`.
+            sub_job_type: The type of the sub-job that receives the call. See `sub_job_id`.
+
+        Returns:
+            The server's response, a dictionary.
+        """
         payload: dict = {
             "source_sub_job_id": source_sub_job_id,
             "target_sub_job_id": target_sub_job_id,
@@ -7398,7 +7829,19 @@ class CortexTrainingClient:
         sub_job_type: str | None = None,
         extra: dict | None = None,
     ) -> dict:
-        """Discard router replay samples on a routed sub-job."""
+        """Discard router replay samples on a sub-job.
+
+        Args:
+            job_id: The job that owns the sub-job.
+            sample_ids: The IDs of the samples to discard.
+            sub_job_id: The sub-job that receives the call.
+            sub_job_type: The type of the sub-job that receives the call.
+            extra: More fields to send with the call. A `sample_ids` entry here takes precedence over
+                the `sample_ids` argument.
+
+        Returns:
+            The server's response, a dictionary.
+        """
         payload = dict(extra or {})
         payload.setdefault("sample_ids", list(sample_ids or []))
         return self._operation(
@@ -7421,11 +7864,19 @@ class CortexTrainingClient:
         retry_interval_s: float = 0.1,
         extra: dict | None = None,
     ) -> dict:
-        """Reset the sampling prefix cache for a Cortex Training job.
+        """Reset the prefix cache of a job's sampling sub-job.
 
-        Operation-specific fields are carried inside the opaque operation
-        payload. ``extra`` allows new reset options to flow through without a
-        cortex-training release.
+        Args:
+            job_id: The job that owns the sampling sub-job.
+            sub_job_id: The sampling sub-job to reset.
+            sub_job_type: The type of the sub-job to reset. The default is `sampling`.
+            drain: Whether requests that are already running finish before the cache is reset.
+            timeout_s: The time limit for the reset, in seconds.
+            retry_interval_s: How long to wait between attempts to reset the cache, in seconds.
+            extra: More fields to send with the call. They override the other options.
+
+        Returns:
+            The server's response, a dictionary.
         """
         payload = dict(extra or {})
         payload.setdefault("drain", drain)
@@ -7668,7 +8119,25 @@ class CortexTrainingClient:
 
     @_track_operation("poll_request")
     def poll_request(self, job_id: str, request_id: str) -> dict:
-        """Poll until the async request completes. Returns the result dict."""
+        """Poll until an asynchronous request finishes, and return its result.
+
+        Polling follows the client's `poll_interval`, `poll_backoff_multiplier`,
+        `poll_max_interval`, and `poll_timeout` settings. Results that arrive in several parts are
+        combined. The call raises `RuntimeError` if the request failed or was canceled, and
+        `TimeoutError` if it isn't finished after `poll_timeout` seconds.
+
+        Args:
+            job_id: The job that the request belongs to.
+            request_id: The request to wait for, as `forward_backward`, `step`, `generate`, or
+                another call returned it.
+
+        Returns:
+            The result, a dictionary. It's empty if the request succeeded with no result.
+
+        Raises:
+            RuntimeError: If the request failed or was canceled.
+            TimeoutError: If the request isn't finished after `poll_timeout` seconds.
+        """
         deadline = time.monotonic() + self.poll_timeout
         delay = self.poll_interval
         debug_context = self._fwd_bwd_request_debug.get(request_id)
@@ -7717,6 +8186,17 @@ class CortexTrainingClient:
         max_events: int | None = None,
         cursor: str | None = None,
     ) -> dict:
+        """Return the current status of an asynchronous request, without waiting.
+
+        Args:
+            job_id: The job that the request belongs to.
+            request_id: The request to read.
+            max_events: The most events to return.
+            cursor: Where to continue reading events: the `next_cursor` of a previous status.
+
+        Returns:
+            The status, a dictionary with fields such as `status`, `events`, and `next_cursor`.
+        """
         params = {}
         if max_events is not None:
             params["max_events"] = max_events
@@ -7741,6 +8221,17 @@ class CortexTrainingClient:
         sub_job_id: str | None = None,
         sub_job_type: str | None = None,
     ) -> dict:
+        """Cancel an asynchronous request.
+
+        Args:
+            job_id: The job that the request belongs to.
+            request_id: The request to cancel.
+            sub_job_id: The sub-job that runs the request.
+            sub_job_type: The type of the sub-job that runs the request.
+
+        Returns:
+            The server's response, a dictionary.
+        """
         return self._operation(
             job_id,
             "cancel-request",
@@ -7761,17 +8252,33 @@ class CortexTrainingClient:
         sub_job_id: str | None = None,
         sub_job_type: str | None = None,
     ) -> dict:
-        """Fetch one page of a sub-job's logs from ``cursor`` (read-only).
+        """Return one page of a sub-job's log, starting at a cursor.
 
-        The target is the sub-job's zone-manager (Ray head) pod, whose stdout
-        already includes worker output (Ray ``log_to_driver``); identify it via
-        ``sub_job_id`` (or ``sub_job_type`` when unambiguous). Returns
-        ``{"entries": [...], "next_cursor": str, "eof": bool}``. Re-call with
-        ``next_cursor`` to continue; an empty ``cursor`` reads from the start.
+        To read a log continuously, use `stream_logs`. A finished job's live logs are gone, so for
+        a job that has ended, the call raises an error at once that points to
+        `download_stdout_logs`. It does the same for a `sub_job_id` that isn't part of the job.
 
-        A finished job's pods are gone, so this raises at once, with a pointer
-        to :meth:`download_stdout_logs` for the saved console; so does a
-        ``sub_job_id`` that is not part of the job.
+        Each entry in a page is a dictionary that holds one log line with its time:
+
+        ```python
+        {"_raw": "<time> <line>"}
+        ```
+
+        Args:
+            job_id: The job to read logs from.
+            cursor: Where to start reading: the `next_cursor` of the previous page. If you omit it,
+                reading starts at the beginning of the log.
+            max_lines: The most lines to return in the page.
+            sub_job_id: The sub-job whose log to read. Pass it, or pass `sub_job_type` when the
+                job has only one sub-job of that type.
+            sub_job_type: The type of the sub-job whose log to read, `training` or `sampling`.
+
+        Returns:
+            A dictionary `{"entries": [...], "next_cursor": ..., "eof": ...}`. Pass `next_cursor`
+                back as `cursor` to continue. `eof` is `True` when the log has ended.
+
+        Raises:
+            requests.HTTPError: If the request fails, including when the job has ended.
         """
         payload: dict = {}
         if cursor is not None:
@@ -7916,17 +8423,32 @@ class CortexTrainingClient:
         poll_interval: float | None = None,
         follow: bool = True,
     ) -> Iterator[dict]:
-        """Yield a sub-job's log entries, polling with backoff.
+        """Yield a sub-job's log entries.
 
-        Drains the log then, with ``follow=True`` (the default), keeps polling
-        for new entries until the caller stops iterating — suitable for a live
-        tail. With ``follow=False`` it stops at the first empty page, once it
-        has caught up with the log (whether or not the server reports ``eof``).
+        With `follow=True` (the default), the stream keeps polling for new entries until you stop
+        iterating, like a live tail. With `follow=False`, it stops once it has caught up with the
+        log. Entries have the same form as in `tail_logs`.
 
-        The stream also ends, without an error, once the log can grow no more:
-        at an empty page that reports ``eof``, or when the job ends after the
-        stream has read from it. A job that had already ended before the first
-        read raises, as :meth:`tail_logs` does.
+        The stream also ends without an error when the log can't grow any more: when the log
+        reports its end, or when the job ends after the stream started reading. If the job had
+        already ended before the first read, the call raises an error. Use `download_stdout_logs`
+        for an ended job's output.
+
+        Args:
+            job_id: The job to read logs from.
+            sub_job_id: The sub-job whose log to read. Pass it, or pass `sub_job_type` when the
+                job has only one sub-job of that type.
+            sub_job_type: The type of the sub-job whose log to read, `training` or `sampling`.
+            cursor: Where to start reading. If you omit it, reading starts at the beginning of
+                the log.
+            max_lines: The most lines to read in each request.
+            poll_interval: Seconds to wait before polling again when there are no new entries.
+                The wait grows between polls. If you omit it, the client's `poll_interval`
+                applies.
+            follow: Whether to keep polling for new entries after catching up with the log.
+
+        Yields:
+            Log entries, each a dictionary.
         """
         read_once = False
 
@@ -7973,13 +8495,19 @@ class CortexTrainingClient:
         sub_job_id: str | None = None,
         sub_job_type: str | None = None,
     ) -> dict:
-        """Fetch one page of zone scheduling events for the session.
+        """Return one page of scheduling events for a job.
 
-        Returns ``{"events": [...], "next_cursor": str, "eof": bool}``. Served
-        by the zone dispatcher itself, not routed to a Zone Manager.
+        The service doesn't accept this call yet.
 
-        Note: the server does not currently accept this operation; see
-        ``docs/reference/rest-api.md`` section 7.9.
+        Args:
+            job_id: The job to read events for.
+            cursor: Where to start reading: the `next_cursor` of the previous page.
+            max_events: The most events to return in the page.
+            sub_job_id: The sub-job to read events for.
+            sub_job_type: The type of the sub-job to read events for.
+
+        Returns:
+            A dictionary `{"events": [...], "next_cursor": ..., "eof": ...}`.
         """
         payload: dict = {}
         if cursor is not None:
@@ -8005,7 +8533,22 @@ class CortexTrainingClient:
         poll_interval: float | None = None,
         follow: bool = True,
     ) -> Iterator[dict]:
-        """Yield zone scheduling events for the session, polling with backoff."""
+        """Yield scheduling events for a job, polling with backoff.
+
+        The service doesn't accept this call yet.
+
+        Args:
+            job_id: The job to read events for.
+            cursor: Where to start reading.
+            max_events: The most events to read in each request.
+            sub_job_id: The sub-job to read events for.
+            sub_job_type: The type of the sub-job to read events for.
+            poll_interval: Seconds to wait before polling again when there are no new events.
+            follow: Whether to keep polling for new events after catching up.
+
+        Yields:
+            Events, each a dictionary.
+        """
         return self._stream_pages(
             lambda cur: self.tail_events(
                 job_id,
@@ -8024,11 +8567,30 @@ class CortexTrainingClient:
 
     @_track_operation("list_checkpoints")
     def list_checkpoints(self, job_id: str) -> list:
+        """Return a job's checkpoints.
+
+        Args:
+            job_id: The job to list checkpoints of.
+
+        Returns:
+            A list of dictionaries, each with `checkpoint_id`, `checkpoint_type`, `global_steps`,
+                `avg_loss`, and `created_at`.
+        """
         resp = self._send("GET", f"{self._prefix}/{job_id}/checkpoints")
         return resp.json().get("checkpoints", [])
 
     @_track_operation("export_checkpoint")
     def export_checkpoint(self, job_id: str, checkpoint_id: str) -> dict:
+        """Return short-lived download links for a checkpoint's files.
+
+        Args:
+            job_id: The job that the checkpoint belongs to.
+            checkpoint_id: The checkpoint to export.
+
+        Returns:
+            A dictionary with `checkpoint_id`, `files`, and `expires_at`. Each file has a
+                `filename`, a `url`, and its `size_bytes`.
+        """
         # The REST API uses colon-action syntax: /{jobId}/checkpoints/{cpId}:export
         resp = self._send(
             "POST",
@@ -8038,5 +8600,12 @@ class CortexTrainingClient:
 
     @_track_operation("delete_checkpoint")
     def delete_checkpoint(self, job_id: str, checkpoint_id: str) -> None:
-        """Delete a checkpoint. Returns None on success."""
+        """Delete a checkpoint.
+
+        The call raises an error if the checkpoint doesn't exist.
+
+        Args:
+            job_id: The job that the checkpoint belongs to.
+            checkpoint_id: The checkpoint to delete.
+        """
         self._send("DELETE", f"{self._prefix}/{job_id}/checkpoints/{checkpoint_id}")

@@ -97,19 +97,22 @@ RECONNECT = "reconnect"
 
 
 class DownloadCancelled(Exception):
-    """Raise from a download ``progress`` callback to stop the download.
+    """Raise this from a download callback to stop the download.
 
-    The download stops promptly, keeps the chunks already written so a later
-    ``resume=True`` call continues from them, and re-raises this exception.
-    Client telemetry records it as a cancellation rather than a failure.
+    The download stops promptly, keeps the parts it has already saved so that a later call with
+    `resume=True` continues from them, and raises this exception again. Client telemetry counts
+    it as a cancellation, not a failure.
     """
 
 
 class NoChunksError(ValueError):
-    """A sub-job named in ``sub_job_ids`` has no chunks of the requested kind.
+    """Raised when a sub-job named in `sub_job_ids` has nothing to download.
 
-    ``sub_job_ids`` lists the sub-jobs without chunks; ``available`` lists the
-    sub-jobs that have some. It is a ``ValueError``, as before it existed.
+    It's a `ValueError`.
+
+    Attributes:
+        sub_job_ids: The sub-jobs that have nothing to download.
+        available: The sub-jobs that have something to download.
     """
 
     def __init__(self, message: str, *, sub_job_ids: list[str], available: list[str]):
