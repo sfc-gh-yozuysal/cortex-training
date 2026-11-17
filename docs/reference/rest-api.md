@@ -2706,9 +2706,9 @@ the job's model, which for `dflash2` is the target. As for any import,
 request alone cannot show a mismatch, so a client cannot check a stage directory
 against `model_name` the way it can check a saved checkpoint's job.
 
-`target_from_source_checkpoint` is rejected unless `source_checkpoint_info`
-names a checkpoint saved by Cortex Training. A checkpoint that is not
-weights-only fails the job when it starts.
+`target_from_source_checkpoint` must be `true` or `false`, and `true` is rejected
+unless `source_checkpoint_info` names a checkpoint saved by Cortex Training. A
+checkpoint that is not weights-only fails the job when it starts.
 
 Every weights-only checkpoint of a draft trained against a fine-tune, whether
 named by checkpoint or imported from a stage, carries the fine-tune under
@@ -2728,14 +2728,18 @@ To serve a draft trained with the `dflash2` provider, set
 `vllm_config.speculative_config.from_source_checkpoint` to `true` instead of
 `model`, and name the training job's weights-only checkpoint in
 `source_checkpoint_info` (`checkpoint_id` and `source_job_id`). The checkpoint
-becomes the draft model, `model_name` stays the target, and the flag is not
-forwarded to vLLM. The checkpoint is not treated as a LoRA adapter.
+becomes the draft model, `model_name` is the target unless the checkpoint
+carries one (see below), and the flag is not forwarded to vLLM. The checkpoint
+is not treated as a LoRA adapter.
 
 When the checkpoint carries a `target/` folder (a draft trained for a
 fine-tune), that folder is served as the target instead of `model_name`, which
 must still be the fine-tune's base. When that fine-tune is a LoRA fine-tune,
 set `inference_config.peft_config` as you would to sample from its own
 checkpoint; without it the job fails at startup rather than serving the base.
+Whether the fine-tune is LoRA is known only from the checkpoint, so the request
+is not rejected when it is created: the failure comes when the sampling job
+starts, after the draft has trained. Set `peft_config` up front.
 
 The flag is rejected unless all of these hold:
 
