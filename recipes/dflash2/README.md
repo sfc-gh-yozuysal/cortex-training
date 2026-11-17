@@ -63,7 +63,9 @@ For a model you fine-tuned on Cortex Training, train the draft against the fine-
 fine-tuned from (it still picks the catalog files, `drafts/<model>.json` and the tokenizer):
 
 - `target_job_id=` and `target_checkpoint_id=`: a **weights-only** checkpoint the fine-tuning job saved. A full fine-tune and a LoRA fine-tune both work; a LoRA adapter is merged into its base for training.
-- or `target_stage_path=@DB.SCHEMA.STAGE/path`: a Hugging Face directory you uploaded to a stage, as in [Start a Job From Your Own Weights](../../docs/guides/training/external-weights.md).
+- or `target_stage_path=@DB.SCHEMA.STAGE/path`: a Hugging Face directory you uploaded to a stage, as in [Start a Job From Your Own Weights](../../docs/guides/training/external-weights.md). The recipe cannot read a stage directory, so unlike a saved checkpoint it does not check it against `model=`: make sure it is a fine-tune of that base, and expect a warning saying so.
+
+A saved checkpoint is checked before any job starts: its job must have trained `model=`, and it must be weights-only.
 
 ```bash
 # 1. Answer the prompts with the fine-tune, so the draft trains on the fine-tune's own text.
@@ -82,7 +84,7 @@ python -m recipes.dflash2.evaluate prompts=heldout.jsonl \
   draft_job_id=TRAINING_JOB_ID draft_checkpoint_id=cp_...
 ```
 
-Each draft checkpoint is therefore the size of the fine-tune plus the draft. Resuming such a draft job from its own `resumable` checkpoint is not supported: its later saves would not carry the fine-tune. Start a new job from the fine-tune instead.
+Each draft checkpoint is therefore the size of the fine-tune plus the draft. Resuming such a draft job from its own `resumable` checkpoint is not supported: its later saves would not carry the fine-tune. `train.py` refuses a `job_config=` that names a `source_checkpoint_info` of its own next to a fine-tune, but the service does not stop a resume made through the API, so start a new job from the fine-tune instead.
 
 ## Results
 

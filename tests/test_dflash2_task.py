@@ -5,8 +5,23 @@
 
 from __future__ import annotations
 
+import itertools
+
+import pytest
+
 from recipes.dflash2.task import TokenizedConversation
 from recipes.dflash2.task import collate
+
+
+def tokens_the_loss_supervises(request_mask: list[float]) -> list[float]:
+    """Which tokens of one row the ``dflash2`` loss trains on, given the ``loss_mask`` its request carries.
+
+    This is the loss's side of the contract, written from the REST reference rather than from ``collate``: the
+    ``dflash2`` loss reads the prediction-aligned mask, where entry ``i`` weights the logits at position ``i``, which
+    predict token ``i + 1``. So token ``j`` is supervised when entry ``j - 1`` is, and a row's first token, which no
+    logits predict, never is.
+    """
+    return [0.0, *request_mask[:-1]]
 
 
 def test_the_request_mask_supervises_exactly_the_response_tokens():
@@ -29,3 +44,16 @@ def test_the_request_mask_keeps_every_supervised_token_but_the_first_of_a_row():
 
     assert context["loss_mask"].tolist() == [[1, 0, 1, 1, 0]]
     assert context["loss_mask"].sum().item() == seq.num_supervised - 1
+
+
+@pytest.mark.parametrize("length", range(2, 8))
+def test_the_loss_trains_on_the_tokens_the_conversation_marked(length):
+    # Every mask a row of this length can have. A request that left the mask unshifted would have the loss read a
+    # response [A, B] as supervising B and the token after it, and skip A.
+    for bits in itertools.product([0, 1], repeat=length):
+        seq = TokenizedConversation(input_ids=list(range(length)), loss_mask=list(bits))
+
+        _, context = collate([seq], pad_token_id=0, max_seq_len=16)
+
+        marked = [0.0, *map(float, bits[1:])]
+        assert tokens_the_loss_supervises(context["loss_mask"][0, :length].tolist()) == marked, bits

@@ -137,6 +137,14 @@ def job_body(config: Config, target: FineTunedTarget | None = None) -> dict:
     )
     if target is None:
         return body
+    named = training_sub_job(body).get("source_checkpoint_info")
+    if named:
+        # The two would merge key by key: the fine-tune would replace a resume without a word, or mix with an import.
+        raise ValueError(
+            f"the job already names source_checkpoint_info {named}, but the source of a draft trained against a "
+            "fine-tune is that fine-tune. Such a job cannot resume from a checkpoint (its later saves would not carry "
+            "the fine-tune): remove source_checkpoint_info from job_config=, or drop target_*."
+        )
     logger.info("training the draft against the fine-tune %s", target.source_checkpoint_info)
     return merge_job_config(body, target.training_override())
 

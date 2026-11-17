@@ -17,6 +17,7 @@ The three steps use it differently:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,10 +25,14 @@ from typing import Any
 
 from recipes.utils import source_checkpoint_info
 
+logger = logging.getLogger(__name__)
+
 # The folder of a weights-only checkpoint that holds a LoRA job's adapter, and the one of a draft checkpoint that
 # holds the fine-tune the draft was trained against.
 ADAPTER_DIR = "default"
 TARGET_DIR = "target"
+# Folders that hold a checkpoint's own parts. Neither is ever the folder an export puts the whole checkpoint in.
+_PART_DIRS = frozenset({ADAPTER_DIR, TARGET_DIR})
 
 
 @dataclass(frozen=True)
@@ -59,7 +64,9 @@ def find_files(files: Sequence[Mapping[str, Any]], filename: str) -> list[Mappin
     """The entries for ``filename`` under the checkpoint root.
 
     The export lists a checkpoint's files under its tag folder (``global_step5/config.json``). A file listed as
-    ``filename`` itself is at the root; only when there is none does one folder down count.
+    ``filename`` itself is at the root; only when there is none does one folder down count. The checkpoint's own
+    ``target/`` and ``default/`` folders do not count as that folder: a draft whose root ``config.json`` is missing
+    has no ``config.json``, rather than the one of the target it carries.
     """
     exact = [f for f in files if f.get("filename") == filename]
     if exact:
@@ -67,7 +74,7 @@ def find_files(files: Sequence[Mapping[str, Any]], filename: str) -> list[Mappin
 
     def one_folder_down(name: str) -> bool:
         folder, _, rest = name.partition("/")
-        return bool(folder) and rest == filename
+        return bool(folder) and folder not in _PART_DIRS and rest == filename
 
     return [f for f in files if one_folder_down(str(f.get("filename", "")))]
 
@@ -96,6 +103,14 @@ def fine_tuned_target(
     if stage_path:
         if job_id or checkpoint_id:
             raise ValueError("name the target by target_job_id and target_checkpoint_id, or by target_stage_path")
+        # Nothing here can read a stage directory, so unlike a saved checkpoint it is not checked against model.
+        logger.warning(
+            "target_stage_path %s is not checked against model=%s from here: it has to be a fine-tune of %s, which "
+            "picks the draft architecture and the tokenizer",
+            stage_path,
+            model,
+            model,
+        )
         return FineTunedTarget({"external_stage_path": stage_path})
     if not (job_id or checkpoint_id):
         return None

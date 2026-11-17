@@ -2700,17 +2700,27 @@ training = SubJobConfig.training_job(
 
 A fine-tune uploaded to a stage is named by `source_checkpoint_info.external_stage_path`
 instead, without `target_from_source_checkpoint`: imported weights are always
-the job's model, which for `dflash2` is the target.
+the job's model, which for `dflash2` is the target. As for any import,
+`model_name` has to be a supported base that the uploaded directory matches (see
+[Start a Job From Your Own Weights](../guides/training/external-weights.md)). The
+request alone cannot show a mismatch, so a client cannot check a stage directory
+against `model_name` the way it can check a saved checkpoint's job.
 
 `target_from_source_checkpoint` is rejected unless `source_checkpoint_info`
 names a checkpoint saved by Cortex Training. A checkpoint that is not
 weights-only fails the job when it starts.
 
-Every weights-only checkpoint of a draft trained against a fine-tune, staged or
-imported, carries the fine-tune under `target/` next to the draft's own
-`config.json` and `model.safetensors`, so it is the size of both. Resuming such
-a job from its own `resumable` checkpoint is not supported: its later saves
-would not carry the fine-tune.
+Every weights-only checkpoint of a draft trained against a fine-tune, whether
+named by checkpoint or imported from a stage, carries the fine-tune under
+`target/` next to the draft's own `config.json` and `model.safetensors`, so it
+is the size of both.
+
+Resuming such a job from its own `resumable` checkpoint is not supported, and
+the service does not reject it: the resumed job has no fine-tune to carry, so
+its later saves have no `target/`, and an endpoint serving one of them serves
+`model_name` as the target. Start a new job from the fine-tune instead. The
+DFlash2 recipe refuses a job config that names a `source_checkpoint_info` of its
+own next to a fine-tune.
 
 #### Serving a trained draft
 
