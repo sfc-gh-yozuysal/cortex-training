@@ -16,26 +16,36 @@
 """Merge gate for the public API docstrings.
 
 The docstrings of every name in ``cortex_training.__all__`` are published verbatim on
-docs.snowflake.com. The rules checked here are listed under "Public API docstrings" in
-AGENTS.md. A violation is a string "<qualname>: <rule> <detail>"; the ones in
+docs.snowflake.com. Ruff (``ruff check``) enforces the structural rules; this test checks
+what Ruff can't, listed under "Public API docstrings" in AGENTS.md, and that Ruff's scope
+(``[tool.ruff] include`` and each module's ``__all__``) still matches the exported API.
+A violation is a string "<qualname>: <rule> <detail>"; the ones in
 public_api_docstrings_baseline.txt are accepted for now.
 """
 
 import ast
 import inspect
 import re
+import sys
 import textwrap
 from pathlib import Path
 
 import cortex_training
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10; tomlkit is a runtime dependency
+    import tomlkit as _tomlkit
+
+    tomllib = None
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = Path(__file__).with_name("public_api_docstrings_baseline.txt")
 NOT_DOCUMENTED = {"wire", "__version__"}
 GUIDE = "See the 'Public API docstrings' section of AGENTS.md for the rules."
 
 _DEPRECATED = re.compile(r"Deprecated: use \w")
 _SECTION = re.compile(r"^(Args|Returns|Yields|Raises|Example|Examples|Note|Notes|Attributes):\s*$")
-_ENTRY = re.compile(r"^(\*{0,2}\w+)(?:\s*\(.*\))?:(?:\s+(.*))?$")
 _URL = re.compile(r"https?://\S+")
 _SPAN = re.compile(r"(`+)(?!`).+?(?<!`)\1", re.S)
 _ROLE = re.compile(r":(?:meth|class|func|attr|mod|exc):`~?([^`]+)`")
@@ -87,25 +97,6 @@ def _sections(doc: str) -> dict[str, list[str]]:
             else:
                 current.append(line)
     return found
-
-
-def _documented_args(doc: str) -> dict[str, str]:
-    """Return {parameter name: description} from the Args section."""
-    body = [line for line in _sections(doc).get("Args", []) if line.strip()]
-    if not body:
-        return {}
-    entry_indent = _indent(body[0])
-    args: dict[str, list[str]] = {}
-    current = None
-    for line in body:
-        match = _ENTRY.match(line.strip()) if _indent(line) == entry_indent else None
-        if match:
-            current = args.setdefault(match.group(1).lstrip("*"), [])
-            if match.group(2):
-                current.append(match.group(2))
-        elif current is not None:
-            current.append(line.strip())
-    return {name: " ".join(parts).strip() for name, parts in args.items()}
 
 
 def _prose(doc: str) -> str:
@@ -207,10 +198,12 @@ def _check_signature_privacy(qualname: str, func) -> list[str]:
     return violations
 
 
-def _check_summary(qualname: str, doc: str) -> list[str]:
-    first = doc.splitlines()[0].strip() if doc.strip() else ""
-    if not first:
-        return [f"{qualname}: S1 missing docstring"]
+def _check_summary(qualname: str, doc: str, *, required: bool) -> list[str]:
+    if not doc.strip():
+        # Ruff's D101, D102, D103, and D107 report this, except in a module whose name starts
+        # with an underscore: Ruff takes everything in one as private, whatever its __all__.
+        return [f"{qualname}: S1 missing docstring"] if required else []
+    first = doc.splitlines()[0].strip()
     if not first.endswith(".") or re.search(r"[.!?] [A-Z]", first):
         return [f"{qualname}: S1 first line must be a one-sentence summary ending in a period"]
     if first.startswith("Deprecated") and not _DEPRECATED.match(first):
@@ -218,26 +211,32 @@ def _check_summary(qualname: str, doc: str) -> list[str]:
     return []
 
 
-def check_callable(qualname: str, func, *, kind: str = "function") -> list[str]:
+def _in_private_module(obj) -> bool:
+    return any(_is_private(part) for part in obj.__module__.split("."))
+
+
+def check_callable(
+    qualname: str, func, *, kind: str = "function", required: bool = False
+) -> list[str]:
     """Check one public function, method or property; kind is "function" or "property"."""
     target = func.fget if isinstance(func, property) else func
     doc = inspect.cleandoc(target.__doc__ or "")
-    violations = _check_summary(qualname, doc)
+    violations = _check_summary(qualname, doc, required=required)
     violations += _check_signature_privacy(qualname, target)
     violations += _check_prose(qualname, doc)
     if kind == "property":
         return violations
-    deprecated = bool(_DEPRECATED.match(doc))
+    # Ruff's D417 checks every parameter against an Args section that exists, so only a
+    # missing section is left to S2. Its DOC201 and DOC402 skip a one-line docstring and,
+    # under the Google convention, a summary that starts with "Return", so S3 stays whole.
     signature = inspect.signature(target)
-    if not deprecated:
-        documented = _documented_args(doc)
-        for name, param in signature.parameters.items():
-            if name in ("self", "cls") or _is_private(name):
-                continue
-            if not documented.get(name):
-                violations.append(f"{qualname}: S2 missing description for {name}")
-    returns_none = signature.return_annotation in (None, "None")
+    has_parameters = any(
+        name not in ("self", "cls") and not _is_private(name) for name in signature.parameters
+    )
     sections = _sections(doc)
+    if has_parameters and "Args" not in sections and not _DEPRECATED.match(doc):
+        violations.append(f"{qualname}: S2 missing Args section")
+    returns_none = signature.return_annotation in (None, "None")
     if (
         target.__name__ != "__init__"
         and not returns_none
@@ -251,7 +250,8 @@ def check_class(qualname: str, cls: type) -> list[str]:
     own_doc = cls.__dict__.get("__doc__") or ""
     if own_doc.startswith(f"{cls.__name__}("):  # dataclass-generated
         own_doc = ""
-    violations = _check_summary(qualname, inspect.cleandoc(own_doc))
+    required = _in_private_module(cls)
+    violations = _check_summary(qualname, inspect.cleandoc(own_doc), required=required)
     violations += _check_prose(qualname, inspect.cleandoc(own_doc))
     is_exception = issubclass(cls, BaseException)
     for name, member in cls.__dict__.items():
@@ -260,16 +260,20 @@ def check_class(qualname: str, cls: type) -> list[str]:
                 if is_exception:
                     violations += _check_signature_privacy(f"{qualname}.__init__", member)
                 else:
-                    violations += check_callable(f"{qualname}.__init__", member)
+                    violations += check_callable(
+                        f"{qualname}.__init__", member, required=required
+                    )
             continue
         if _is_private(name) or name.startswith("__"):
             continue
         if isinstance(member, (classmethod, staticmethod)):
             member = member.__func__
         if isinstance(member, property):
-            violations += check_callable(f"{qualname}.{name}", member, kind="property")
+            violations += check_callable(
+                f"{qualname}.{name}", member, kind="property", required=required
+            )
         elif inspect.isfunction(member):
-            violations += check_callable(f"{qualname}.{name}", member)
+            violations += check_callable(f"{qualname}.{name}", member, required=required)
     return violations
 
 
@@ -282,7 +286,7 @@ def collect_violations() -> list[str]:
         if inspect.isclass(obj):
             violations += check_class(name, obj)
         else:
-            violations += check_callable(name, obj)
+            violations += check_callable(name, obj, required=_in_private_module(obj))
     return violations
 
 
@@ -317,6 +321,30 @@ def test_public_api_docstring_baseline_has_no_stale_entries():
     )
 
 
+def _ruff_include() -> set[str]:
+    text = (REPO_ROOT / "pyproject.toml").read_text()
+    data = tomllib.loads(text) if tomllib else _tomlkit.parse(text)
+    return set(data["tool"]["ruff"]["include"])
+
+
+def test_ruff_scope_matches_the_exported_api():
+    include = _ruff_include()
+    problems = [f"{path} in [tool.ruff] include doesn't exist" for path in sorted(include)
+                if not (REPO_ROOT / path).is_file()]
+    for name in cortex_training.__all__:
+        if name in NOT_DOCUMENTED:
+            continue
+        module = sys.modules[getattr(cortex_training, name).__module__]
+        path = Path(module.__file__).resolve().relative_to(REPO_ROOT).as_posix()
+        if path not in include:
+            problems.append(f"{name}: add {path} to [tool.ruff] include in pyproject.toml")
+        if name not in getattr(module, "__all__", ()):
+            problems.append(f"{name}: add it to {module.__name__}.__all__, which Ruff reads")
+    assert not problems, "Ruff's docstring scope has drifted from the public API:\n  " + "\n  ".join(
+        problems
+    )
+
+
 def test_checker_flags_each_rule_family():
     def bad(self, a, retry_on=_private_hook, *args) -> int:
         """Does things, e.g. we call POST /x, see `_hidden` or src/a.py \u2014 TODO
@@ -325,12 +353,14 @@ def test_checker_flags_each_rule_family():
             a: The first.
         """
 
-    violations = " | ".join(check_callable("bad", bad))
+    def unlisted(a, b) -> int:
+        """Return a number."""
+
+    violations = " | ".join(check_callable("bad", bad) + check_callable("unlisted", unlisted))
     for expected in (
         "S1",
-        "S2 missing description for retry_on",
-        "S2 missing description for args",
-        "S3",
+        "unlisted: S2 missing Args section",
+        "unlisted: S3",
         "S4 private default for retry_on",
         "C1",
         "C2",
@@ -340,6 +370,13 @@ def test_checker_flags_each_rule_family():
         "C7",
     ):
         assert expected in violations, (expected, violations)
+
+
+def test_missing_docstring_is_only_ours_in_private_modules():
+    def nodoc() -> None: ...
+
+    assert check_callable("nodoc", nodoc) == []
+    assert check_callable("nodoc", nodoc, required=True) == ["nodoc: S1 missing docstring"]
 
 
 def test_checker_accepts_a_documented_function_and_a_deprecated_one():

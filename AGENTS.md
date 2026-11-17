@@ -6,9 +6,10 @@ from the root of this repository:
 ```bash
 uv pip install -e ".[dev]"
 python3 -m pytest tests/ -q
+ruff check
 ```
 
-All tests must pass.
+All tests must pass, and `ruff check` must report no errors.
 
 ## Context
 
@@ -38,15 +39,45 @@ staticmethod, and property defined on that class, not inherited ones. The explic
 `__init__` of a class that isn't an exception counts too, since the reference renders
 it. Private items (a leading underscore), and private parameters, are out of scope.
 
-**Rules** (`tests/test_public_api_docstrings.py` enforces these; it's a required check):
+**Checks.** Two checks enforce these rules. Both are meant to be required to merge:
+pytest already is, and the `lint (docstrings)` CI job is a check that will be required.
 
-- **S1** Every public item has a docstring whose first line is a one-sentence summary
-  ending in a period. A deprecated item's summary reads `Deprecated: use <replacement>.`
+- **Ruff** enforces the structure: a docstring on every public item (`D101`, `D102`,
+  `D103`, `D107`), the summary layout (`D205`, `D212`, `D415`), an `Args:` entry with a
+  description for every parameter, `*args` and `**kwargs` included (`D417`), `Returns:`
+  or `Yields:` when the function returns or yields a value (`DOC201`, `DOC402`), and
+  `Raises:` for every exception the function raises with a `raise` statement (`DOC501`).
+  It also checks the docstring form of the internal code in the same modules. Run it from
+  the root of this repository, after `uv pip install -e ".[dev]"`:
+
+  ```bash
+  ruff check
+  ```
+
+  The rule set, the Ruff version, and the files it covers live in `pyproject.toml`
+  (`[tool.ruff]`), so the command takes no arguments. It reads each module's `__all__` to
+  tell public items from internal ones. When you export a name from a new module, add that
+  module to `include` and the name to its `__all__`; the test fails until you do. Fix the
+  docstring instead of adding `noqa` or an ignore on public code. Ruff can't see an
+  exception that a helper or a library raises, and `DOC502` is off for that reason, so
+  document those in `Raises:` too.
+- **The test** (`tests/test_public_api_docstrings.py`) enforces what Ruff doesn't: S1 to
+  S3 below in the parts Ruff leaves out, S4, and C1 to C7. It also checks that Ruff's scope
+  still matches `cortex_training.__all__`.
+
+**Rules:**
+
+- **S1** The first line of every docstring is a one-sentence summary ending in a period
+  (Ruff checks the layout and requires some punctuation). A deprecated item's summary
+  reads `Deprecated: use <replacement>.` The test also requires a docstring on the items
+  in modules whose names start with an underscore, because Ruff treats those as private.
 - **S2** Google style: every parameter (except `self`/`cls`) appears in an `Args:`
-  section with a description. `*args` and `**kwargs` appear by name. Deprecated items
-  are exempt, because the docs generator hides them.
+  section with a description, and `*args` and `**kwargs` by name. Ruff checks the entries;
+  the test requires the section. Deprecated items are exempt from the test, because the
+  docs generator hides them.
 - **S3** A method whose return annotation isn't `None` has a `Returns:` section, or
-  `Yields:` for iterators. Properties need only the summary.
+  `Yields:` for iterators. Properties need only the summary. The test checks it for every
+  method, because Ruff skips one-line docstrings and summaries that start with "Return".
 - **S4** Public signatures name nothing private: no default or annotation that uses a
   leading-underscore name. Make internal hooks private parameters (`_retry_on`), give
   constants a literal default, and type callbacks as `Callable[...]` or an exported type.
