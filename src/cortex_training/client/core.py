@@ -208,6 +208,8 @@ __all__ = [
     "Hardware",
     "InferenceConfig",
     "JobType",
+    "ModelDeploymentWaitError",
+    "ModelDeploymentWaitTimeout",
     "SubJobConfig",
     "TrainingConfig",
     "build_forward_backward_kwargs",
@@ -2217,24 +2219,38 @@ def _sanitized_model_deployment_request_error(
 
 
 class ModelDeploymentWaitError(RuntimeError):
-    """A deployment reached a terminal status other than ``READY``.
+    """Raised when a deployment ends in a status other than `READY`.
 
-    ``deployment`` is the metadata from the last poll, or ``None``.
+    `wait_for_model_deployment` raises it when the deployment reaches `FAILED`,
+    `TERMINATED`, or `DROPPED`. `deployment` holds the metadata from the last poll,
+    or `None`.
     """
 
     def __init__(self, message: str, deployment: dict[str, Any] | None):
+        """Create the error.
+
+        Args:
+            message: What went wrong, and how to find out more.
+            deployment: The deployment's metadata from the last poll, or `None`.
+        """
         super().__init__(message)
         self.deployment = deployment
 
 
 class ModelDeploymentWaitTimeout(TimeoutError):
-    """A deployment did not become ``READY`` before the poll timeout.
+    """Raised when a deployment isn't `READY` before the client's poll timeout.
 
-    The deployment is still running. ``deployment`` is the metadata from the
-    last poll, or ``None``.
+    The deployment keeps running and holding GPUs until you drop it. `deployment`
+    holds the metadata from the last poll, or `None`.
     """
 
     def __init__(self, message: str, deployment: dict[str, Any] | None):
+        """Create the error.
+
+        Args:
+            message: What went wrong, and how to continue.
+            deployment: The deployment's metadata from the last poll, or `None`.
+        """
         super().__init__(message)
         self.deployment = deployment
 
@@ -4090,7 +4106,7 @@ class CortexTrainingClient:
             RuntimeError: If the job reaches an ended state, such as `failed` or `cancelled`,
                 before it runs.
             TimeoutError: If the job isn't running after `poll_timeout` seconds.
-        """
+        """  # noqa: DOC501 - raised through _server_failure, which returns its argument
         deadline = time.monotonic() + self.poll_timeout
         delay = self.poll_interval
         while time.monotonic() < deadline:
@@ -4100,16 +4116,15 @@ class CortexTrainingClient:
                 return job
             if status in _ENDED_JOB_STATES:
                 reason = job.get("reason", "")
-                ended = _server_failure(
+                # _server_failure returns the exception it's given, documented in Raises.
+                raise _server_failure(
                     RuntimeError(f"Job {job_id} reached terminal state '{status}': {reason}"),
                     failed=status == "failed",
                 )
-                raise ended
             delay = self._sleep_with_backoff(delay, deadline)
-        timed_out = _server_failure(
+        raise _server_failure(
             TimeoutError(f"Job {job_id} did not become running within {self.poll_timeout}s")
         )
-        raise timed_out
 
     @_track_operation("get_job")
     def get_job(
@@ -4259,10 +4274,7 @@ class CortexTrainingClient:
         """Poll until the deployment is `READY`, and return its metadata.
 
         Polling follows the client's `poll_interval`, `poll_backoff_multiplier`,
-        `poll_max_interval`, and `poll_timeout` settings. The call raises a `RuntimeError` if
-        the deployment reaches `FAILED`, `TERMINATED`, or `DROPPED`, and a `TimeoutError` if
-        it isn't `READY` after `poll_timeout` seconds. Both errors have a `deployment`
-        attribute with the last metadata that was read. A timeout doesn't drop the
+        `poll_max_interval`, and `poll_timeout` settings. A timeout doesn't drop the
         deployment, which keeps holding GPUs until you drop it.
 
         Args:
@@ -4272,10 +4284,12 @@ class CortexTrainingClient:
             The deployment's metadata, including `base_url`.
 
         Raises:
-            RuntimeError: If the deployment reaches `FAILED`, `TERMINATED`, or `DROPPED`. The
-                error's `deployment` attribute holds the last metadata that was read.
-            TimeoutError: If the deployment isn't `READY` after `poll_timeout` seconds. The
-                error's `deployment` attribute holds the last metadata that was read.
+            ModelDeploymentWaitError: If the deployment reaches `FAILED`, `TERMINATED`, or
+                `DROPPED`. It's a `RuntimeError`, and its `deployment` attribute holds the
+                last metadata that was read.
+            ModelDeploymentWaitTimeout: If the deployment isn't `READY` after `poll_timeout`
+                seconds. It's a `TimeoutError`, and its `deployment` attribute holds the last
+                metadata that was read.
         """
         job_id = _job_id_from_deployment_id(deployment_id)
         deadline = time.monotonic() + self.poll_timeout
@@ -4290,12 +4304,11 @@ class CortexTrainingClient:
             if deployment_status == DEPLOYMENT_STATUS_READY:
                 return metadata
             if deployment_status == DEPLOYMENT_STATUS_DROPPED:
-                dropped = ModelDeploymentWaitError(
+                raise ModelDeploymentWaitError(
                     f"model deployment {deployment_id} was dropped; create a new "
                     "deployment to serve this model again",
                     metadata,
                 )
-                raise dropped
             if deployment_status in {DEPLOYMENT_STATUS_FAILED, DEPLOYMENT_STATUS_TERMINATED}:
                 failure = metadata.get(OUT_FAILURE, {})
                 message = f"model deployment {deployment_id} is {deployment_status}"
@@ -4307,11 +4320,10 @@ class CortexTrainingClient:
                     "; for details run `cortex-training model-deployment download-log "
                     f"{deployment_id}`"
                 )
-                failed = ModelDeploymentWaitError(message, metadata)
-                raise failed
+                raise ModelDeploymentWaitError(message, metadata)
             delay = self._sleep_with_backoff(delay, deadline)
         last_status = metadata[OUT_STATUS] if metadata else DEPLOYMENT_STATUS_UNKNOWN
-        timed_out = ModelDeploymentWaitTimeout(
+        raise ModelDeploymentWaitTimeout(
             f"model deployment {deployment_id} did not become READY within "
             f"{self.poll_timeout:g}s (last status: {last_status}). It is still "
             "running and holding GPUs: run `cortex-training model-deployment wait "
@@ -4319,7 +4331,6 @@ class CortexTrainingClient:
             f"{deployment_id}` to release them",
             metadata,
         )
-        raise timed_out
 
     @_model_deployment_operation
     def drop_model_deployment(self, deployment_id: str) -> dict[str, Any]:
@@ -8318,7 +8329,7 @@ class CortexTrainingClient:
 
         Returns:
             The decoded result.
-        """
+        """  # noqa: DOC501 - raised through _server_failure, which returns its argument
         if state in _SUCCEEDED_REQUEST_STATES:
             # ``payload`` is the result as the sub-job returned it, for the local
             # training-metrics log; ``result`` also has the envelope's transport metrics.
@@ -8363,8 +8374,8 @@ class CortexTrainingClient:
         self._forward_request_ids.discard(request_id)
         exc = RuntimeError(f"Request {request_id} ended with state '{state}': {error}")
         exc.request_id = request_id  # type: ignore[attr-defined]  # read by the outcome metric
-        failure = _server_failure(exc, failed=state == "failed")
-        raise failure
+        # _server_failure returns the exception it's given.
+        raise _server_failure(exc, failed=state == "failed")
 
     @_track_operation("poll_request")
     def poll_request(self, job_id: str, request_id: str) -> dict:
@@ -8386,7 +8397,7 @@ class CortexTrainingClient:
         Raises:
             RuntimeError: If the request failed or was canceled.
             TimeoutError: If the request isn't finished after `poll_timeout` seconds.
-        """
+        """  # noqa: DOC501 - raised through _server_failure, which returns its argument
         deadline = time.monotonic() + self.poll_timeout
         delay = self.poll_interval
         debug_context = self._fwd_bwd_request_debug.get(request_id)
@@ -8422,10 +8433,10 @@ class CortexTrainingClient:
             self._fwd_bwd_request_debug.pop(request_id, None)
         self._generate_request_ids.discard(request_id)
         self._forward_request_ids.discard(request_id)
-        timed_out = _server_failure(
+        # _server_failure returns the exception it's given, documented in Raises.
+        raise _server_failure(
             TimeoutError(f"Request {request_id} did not complete within {self.poll_timeout}s")
         )
-        raise timed_out
 
     @_track_operation("get_request_status")
     def get_request_status(

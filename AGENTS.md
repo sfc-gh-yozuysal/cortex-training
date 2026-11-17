@@ -60,7 +60,10 @@ pytest already is, and the `lint (docstrings)` CI job is a check that will be re
   module to `include` and the name to its `__all__`; the test fails until you do. Fix the
   docstring instead of adding `noqa` or an ignore on public code. Ruff can't see an
   exception that a helper or a library raises, and `DOC502` is off for that reason, so
-  document those in `Raises:` too.
+  document those in `Raises:` too. Don't hide a `raise` from `DOC501` by assigning the
+  exception to a variable first. When `DOC501` names a helper that returns the real
+  exception (`raise _server_failure(RuntimeError(...))`), document the real exception and
+  put `# noqa: DOC501 - <reason>` on the docstring's closing line.
 - **The test** (`tests/test_public_api_docstrings.py`) enforces what Ruff doesn't: S1 to
   S3 below in the parts Ruff leaves out, S4, and C1 to C7. It also checks that Ruff's scope
   still matches `cortex_training.__all__`.
