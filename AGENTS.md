@@ -28,94 +28,39 @@ The reference documents in this repository are the contract to code against:
 
 ## Public API docstrings
 
-The docstrings of the public API are customer documentation. Each PyPI release's
-docstrings are rendered verbatim into the Cortex Training API reference on
-docs.snowflake.com, so a docstring change ships there only after the next release.
-Never patch API wording in the docs repository: fix it here.
+Public docstrings are customer documentation: each PyPI release's docstrings are
+rendered verbatim into the Cortex Training API reference on docs.snowflake.com. Fix
+API wording here, never in the docs repository. "Public" means the names in
+`cortex_training.__all__` and the public members of exported classes.
 
-**Scope.** Every name in `cortex_training.__all__` except `wire` and `__version__`. For an
-exported class, that's the class docstring and every public method, classmethod,
-staticmethod, and property defined on that class, not inherited ones. The explicit
-`__init__` of a class that isn't an exception counts too, since the reference renders
-it. Private items (a leading underscore), and private parameters, are out of scope.
+Two required checks enforce the mechanical rules, and both run with the commands at the
+top of this file. `ruff check` covers Google-style structure (summary, `Args:`,
+`Returns:`, `Raises:`); its rules and file list are in `pyproject.toml`.
+`tests/test_public_api_docstrings.py` covers what Ruff can't, such as private names in
+public signatures, repository paths, wire details, and internal service names; its
+failure message says how to fix each violation.
 
-**Checks.** Two checks enforce these rules. Both are meant to be required to merge:
-pytest already is, and the `lint (docstrings)` CI job is a check that will be required.
+When a check gets in the way:
 
-- **Ruff** enforces the structure: a docstring on every public item (`D101`, `D102`,
-  `D103`, `D107`), the summary layout (`D205`, `D212`, `D415`), an `Args:` entry with a
-  description for every parameter, `*args` and `**kwargs` included (`D417`), `Returns:`
-  or `Yields:` when the function returns or yields a value (`DOC201`, `DOC402`), and
-  `Raises:` for every exception the function raises with a `raise` statement (`DOC501`).
-  It also checks the docstring form of the internal code in the same modules. Run it from
-  the root of this repository, after `uv pip install -e ".[dev]"`:
+- Exporting a name from a new module: add the module to `[tool.ruff] include` and the
+  name to that module's `__all__`. The test tells you when one is missing.
+- `DOC501` names a helper that returns the real exception
+  (`raise _server_failure(RuntimeError(...))`): document the real exception and put
+  `# noqa: DOC501 - <reason>` on the docstring's closing line. Don't hide a `raise` by
+  assigning the exception to a variable first.
+- Fix the docstring rather than adding `noqa` on public code or an entry to
+  `tests/public_api_docstrings_baseline.txt`. A baseline entry needs a reason, and the
+  test fails once it's stale.
 
-  ```bash
-  ruff check
-  ```
-
-  The rule set, the Ruff version, and the files it covers live in `pyproject.toml`
-  (`[tool.ruff]`), so the command takes no arguments. It reads each module's `__all__` to
-  tell public items from internal ones. When you export a name from a new module, add that
-  module to `include` and the name to its `__all__`; the test fails until you do. Fix the
-  docstring instead of adding `noqa` or an ignore on public code. Ruff can't see an
-  exception that a helper or a library raises, and `DOC502` is off for that reason, so
-  document those in `Raises:` too. Don't hide a `raise` from `DOC501` by assigning the
-  exception to a variable first. When `DOC501` names a helper that returns the real
-  exception (`raise _server_failure(RuntimeError(...))`), document the real exception and
-  put `# noqa: DOC501 - <reason>` on the docstring's closing line.
-- **The test** (`tests/test_public_api_docstrings.py`) enforces what Ruff doesn't: S1 to
-  S3 below in the parts Ruff leaves out, S4, and C1 to C7. It also checks that Ruff's scope
-  still matches `cortex_training.__all__`.
-
-**Rules:**
-
-- **S1** The first line of every docstring is a one-sentence summary ending in a period
-  (Ruff checks the layout and requires some punctuation). A deprecated item's summary
-  reads `Deprecated: use <replacement>.` The test also requires a docstring on the items
-  in modules whose names start with an underscore, because Ruff treats those as private.
-- **S2** Google style: every parameter (except `self`/`cls`) appears in an `Args:`
-  section with a description, and `*args` and `**kwargs` by name. Ruff checks the entries;
-  the test requires the section. Deprecated items are exempt from the test, because the
-  docs generator hides them.
-- **S3** A method whose return annotation isn't `None` has a `Returns:` section, or
-  `Yields:` for iterators. Properties need only the summary. The test checks it for every
-  method, because Ruff skips one-line docstrings and summaries that start with "Return".
-- **S4** Public signatures name nothing private: no default or annotation that uses a
-  leading-underscore name. Make internal hooks private parameters (`_retry_on`), give
-  constants a literal default, and type callbacks as `Callable[...]` or an exported type.
-- **C1** No Latin abbreviations: `e.g.`, `i.e.`, `etc.`, `vs.`. Write "for example",
-  "that is", "and so on", "versus".
-- **C2** No repository paths or file names (`docs/`, `src/`, `tests/`, `recipes/`,
-  `*.md`, `*.py`, "this repo"). Readers can't open them. Use a full https URL.
-- **C3** No wire or REST internals: an HTTP method with a path, `/api/v2`, query strings,
-  `DSSST1`, `application/octet-stream`, `proto3`. Also checked inside code spans.
-- **C4** No private identifiers in prose: no backticked `_name`, no `:meth:` or
-  `:class:` role that points at one.
-- **C5** No implementation voice or notes: `we`, `our`, `TODO`, `FIXME`, `XXX`.
-- **C6** No internal service terms: Neutrino, ZMD, zone manager, the zone, control
-  plane. Also checked inside code spans.
-- **C7** No em dashes. Use a colon or two sentences.
-
-The C rules read the docstring prose without fenced code blocks and URLs, and (except
-C3, C4, and C6) without inline code spans.
-
-**Style** (not enforced, still expected):
+What no check catches, so reviewers look for it:
 
 - Describe observable behavior (inputs, outputs, errors, side effects), not mechanism
   such as chunking, retry rules, storage layout, or internal routes.
-- Use contractions ("doesn't", "isn't"), the serial comma, and "or" instead of a slash.
-- Give units for numbers ("300 to 604,800 seconds"). Use "might" or "can", not "may".
-- Use American spelling ("canceled"), but keep a literal value such as `cancelled` in a
-  code span.
-- Keep the lead to a few short paragraphs. Name only things the reader can use:
-  exported classes, public methods, and the exceptions a call raises.
-- Use Markdown code spans (single backticks), not RST double backticks or roles.
-
-**Baseline.** `tests/public_api_docstrings_baseline.txt` lists violations that are
-accepted for now, one per line as `<qualname>: <rule> <detail>  # reason`. The test fails
-on a violation that isn't listed, and on a listed one that no longer occurs, so remove
-an entry when you fix it. The file is empty today: don't add to it without a reason.
+- Name only what the reader can use: exported classes, public methods, and the
+  exceptions a call raises.
+- Use contractions, the serial comma, "or" instead of a slash, units for numbers
+  ("300 to 604,800 seconds"), "might" or "can" instead of "may", and American spelling
+  outside literal values (`cancelled` stays as a status value).
 
 ## Troubleshooting a user's setup
 

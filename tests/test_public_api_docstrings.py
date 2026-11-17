@@ -17,7 +17,7 @@
 
 The docstrings of every name in ``cortex_training.__all__`` are published verbatim on
 docs.snowflake.com. Ruff (``ruff check``) enforces the structural rules; this test checks
-what Ruff can't, listed under "Public API docstrings" in AGENTS.md, and that Ruff's scope
+what Ruff can't (``RULE_FIXES`` below describes each rule), and that Ruff's scope
 (``[tool.ruff] include`` and each module's ``__all__``) still matches the exported API.
 A violation is a string "<qualname>: <rule> <detail>"; the ones in
 public_api_docstrings_baseline.txt are accepted for now.
@@ -42,7 +42,29 @@ except ModuleNotFoundError:  # Python 3.10; tomlkit is a runtime dependency
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = Path(__file__).with_name("public_api_docstrings_baseline.txt")
 NOT_DOCUMENTED = {"wire", "__version__"}
-GUIDE = "See the 'Public API docstrings' section of AGENTS.md for the rules."
+GUIDE = "Background: the 'Public API docstrings' section of AGENTS.md."
+
+# What each rule asks for, printed under the violations it explains.
+RULE_FIXES = {
+    "S1": "Start with a one-sentence summary ending in a period; a deprecated item's "
+    "reads 'Deprecated: use <replacement>.'",
+    "S2": "Add an Args: section that describes every parameter.",
+    "S3": "Add a Returns: section (Yields: for an iterator).",
+    "S4": "Keep private names out of public signatures: make the parameter private "
+    "(_name), use a literal default, or type it with Callable[...] or an exported type.",
+    "C1": "Don't use Latin abbreviations: write 'for example', 'that is', 'and so on', 'versus'.",
+    "C2": "Don't mention repository paths or files; readers can't open them. Link a full https URL.",
+    "C3": "Don't describe REST routes or wire framing; describe what the call does.",
+    "C4": "Don't name private identifiers; name only what the reader can use.",
+    "C5": "Write for the reader: no 'we', 'our', TODO, FIXME, or XXX.",
+    "C6": "Don't name internal services (Neutrino, ZMD, the zone, control plane).",
+    "C7": "Don't use em dashes; use a colon or two sentences.",
+}
+
+
+def _explain(violations: list[str]) -> str:
+    rules = sorted({v.split(": ", 1)[1].split(" ", 1)[0] for v in violations})
+    return "\n".join(f"  {rule}: {RULE_FIXES[rule]}" for rule in rules if rule in RULE_FIXES)
 
 _DEPRECATED = re.compile(r"Deprecated: use \w")
 _SECTION = re.compile(r"^(Args|Returns|Yields|Raises|Example|Examples|Note|Notes|Attributes):\s*$")
@@ -310,7 +332,11 @@ def load_baseline() -> dict[str, str]:
 
 def test_public_api_docstrings_have_no_new_violations():
     new = sorted(set(collect_violations()) - set(load_baseline()))
-    assert not new, f"{len(new)} public API docstring violation(s). {GUIDE}\n  " + "\n  ".join(new)
+    assert not new, (
+        f"{len(new)} public API docstring violation(s):\n  "
+        + "\n  ".join(new)
+        + f"\nHow to fix them:\n{_explain(new)}\n{GUIDE}"
+    )
 
 
 def test_public_api_docstring_baseline_has_no_stale_entries():
