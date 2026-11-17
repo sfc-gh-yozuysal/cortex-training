@@ -491,10 +491,9 @@ class DatabaseAccessError(requests.exceptions.HTTPError, RuntimeError):
         self.statement = statement
 
 
-# Default per-request HTTP timeout, as a (connect, read) pair in seconds. The
-# read leg accommodates long-running data-plane calls; fast control-plane calls
-# such as GetCapacity apply a smaller bound explicitly.
-_DEFAULT_REQUEST_TIMEOUT = (30.0, 600.0)
+# Fast control-plane calls such as GetCapacity apply a smaller bound than the
+# client's request_timeout (default (30.0, 600.0), whose read leg accommodates
+# long-running data-plane calls).
 _CAPACITY_REQUEST_TIMEOUT = (10.0, 30.0)
 
 
@@ -2623,7 +2622,7 @@ class CortexTrainingClient:
         poll_max_interval: float = 6.0,
         pool_maxsize: int = 1024,
         max_retries: int = 10,
-        request_timeout: float | tuple[float, float] = _DEFAULT_REQUEST_TIMEOUT,
+        request_timeout: float | tuple[float, float] = (30.0, 600.0),
     ):
         if poll_interval <= 0:
             raise ValueError("poll_interval must be > 0")
@@ -3704,7 +3703,7 @@ class CortexTrainingClient:
         and rejects one that differs from the source job's, so it is read from
         the source job rather than asked of the user.
         """
-        job = self.get_job(job_id, retry_on=_is_transient_unless_job_not_found)
+        job = self.get_job(job_id, _retry_on=_is_transient_unless_job_not_found)
         for sub_job in job.get("sub_jobs") or ():
             if _normalized_job_type(sub_job.get("job_type")) == JobType.TRAINING.value:
                 model_name = sub_job.get("model_name")
@@ -3756,8 +3755,13 @@ class CortexTrainingClient:
         )
 
     @_track_operation("get_job")
-    def get_job(self, job_id: str, *, retry_on=_is_transient) -> dict:
-        resp = self._send("GET", f"{self._prefix}/{job_id}", retry_on=retry_on)
+    def get_job(
+        self,
+        job_id: str,
+        *,
+        _retry_on: Callable[[BaseException], bool] | None = None,
+    ) -> dict:
+        resp = self._send("GET", f"{self._prefix}/{job_id}", retry_on=_retry_on or _is_transient)
         return resp.json()
 
     @_track_operation("list_jobs")
@@ -3796,7 +3800,7 @@ class CortexTrainingClient:
         being retried like a transient routing 404, so a mistyped or dropped ID
         fails fast.
         """
-        job = self.get_job(job_id, retry_on=_is_transient_unless_job_not_found)
+        job = self.get_job(job_id, _retry_on=_is_transient_unless_job_not_found)
         if _model_deployment_sub_job(job) is None:
             raise ValueError("the requested resource is not a model deployment")
         return job
@@ -4192,7 +4196,7 @@ class CortexTrainingClient:
         self,
         hardware: Hardware | str | None = None,
         *,
-        dimensions: Iterable[str] = _CAPACITY_BREAKDOWN_DIMENSIONS,
+        dimensions: Iterable[str] = ("job_type", "submitted_by"),
     ) -> dict:
         """Return :meth:`get_capacity` plus a ``"breakdown"`` of its GPU usage.
 
@@ -4572,15 +4576,9 @@ class CortexTrainingClient:
     # Leftover temp files are removed only once untouched for this long, so a
     # concurrent download of the same directory is not broken.
     _TEMP_ORPHAN_MIN_AGE_SECONDS = 3600.0
-    # A running job whose newest chunk is older than this gets a warning that
-    # uploads may be stalled.
-    _DOWNLOAD_STALE_AFTER_SECONDS = 600.0
     # The stall check runs alongside the download; once the chunks are written
     # the download waits at most this long for it, then returns without it.
     _STALL_CHECK_WAIT_SECONDS = 10.0
-    # A single LIST or GET attempt that runs longer than this is abandoned and
-    # retried. A chunk GET normally takes well under a second.
-    _DOWNLOAD_TRANSFER_TIMEOUT_SECONDS = 300.0
     # An execution-log GET may take at least its size at this rate before the
     # transfer timeout gives up on it.
     _EXECUTION_LOG_MIN_BYTES_PER_SECOND = 512 * 1024
@@ -4628,7 +4626,7 @@ class CortexTrainingClient:
         resume: bool = False,
         sub_job_ids: Iterable[str] | None = None,
         progress: Callable[[str], None] | None = None,
-        transfer_timeout_seconds: float | None = _DOWNLOAD_TRANSFER_TIMEOUT_SECONDS,
+        transfer_timeout_seconds: float | None = 300.0,
     ) -> list[dict[str, Any]]:
         """Save every execution log file to ``<output_dir>/<sub_job_id>/<filename>``.
 
@@ -5867,8 +5865,8 @@ class CortexTrainingClient:
         on_chunk: Callable[[str, int, int, int], None] | None = None,
         sub_job_ids: Iterable[str] | None = None,
         strict: bool = False,
-        stale_after_seconds: float | None = _DOWNLOAD_STALE_AFTER_SECONDS,
-        transfer_timeout_seconds: float | None = _DOWNLOAD_TRANSFER_TIMEOUT_SECONDS,
+        stale_after_seconds: float | None = 600.0,
+        transfer_timeout_seconds: float | None = 300.0,
         priority: Iterable[str] = (),
         on_commit: Callable[[dict[str, Any]], None] | None = None,
         preview_seconds: float | None = None,
@@ -6150,8 +6148,8 @@ class CortexTrainingClient:
         on_chunk: Callable[[str, int, int, int], None] | None = None,
         sub_job_ids: Iterable[str] | None = None,
         strict: bool = False,
-        stale_after_seconds: float | None = _DOWNLOAD_STALE_AFTER_SECONDS,
-        transfer_timeout_seconds: float | None = _DOWNLOAD_TRANSFER_TIMEOUT_SECONDS,
+        stale_after_seconds: float | None = 600.0,
+        transfer_timeout_seconds: float | None = 300.0,
         preview_seconds: float | None = None,
         on_preview: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
@@ -6225,8 +6223,8 @@ class CortexTrainingClient:
         on_chunk: Callable[[str, int, int, int], None] | None = None,
         sub_job_ids: Iterable[str] | None = None,
         strict: bool = False,
-        stale_after_seconds: float | None = _DOWNLOAD_STALE_AFTER_SECONDS,
-        transfer_timeout_seconds: float | None = _DOWNLOAD_TRANSFER_TIMEOUT_SECONDS,
+        stale_after_seconds: float | None = 600.0,
+        transfer_timeout_seconds: float | None = 300.0,
         priority: Iterable[str] = (),
         on_commit: Callable[[dict[str, Any]], None] | None = None,
         preview_seconds: float | None = None,
@@ -6295,8 +6293,8 @@ class CortexTrainingClient:
         on_chunk: Callable[[str, int, int, int], None] | None = None,
         sub_job_ids: Iterable[str] | None = None,
         strict: bool = False,
-        stale_after_seconds: float | None = _DOWNLOAD_STALE_AFTER_SECONDS,
-        transfer_timeout_seconds: float | None = _DOWNLOAD_TRANSFER_TIMEOUT_SECONDS,
+        stale_after_seconds: float | None = 600.0,
+        transfer_timeout_seconds: float | None = 300.0,
         priority: Iterable[str] = (),
         on_commit: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
@@ -7236,7 +7234,7 @@ class CortexTrainingClient:
         self,
         job_id: str,
         data: Sequence[Any],
-        loss_fn: custom_loss.CustomLossFn,
+        loss_fn: Callable[[Any, list[Any]], tuple[Any, Mapping[str, float]]],
     ) -> dict:
         """Accumulate the gradient of a loss computed in this process. Blocks until done.
 
