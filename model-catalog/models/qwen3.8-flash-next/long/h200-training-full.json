@@ -39,6 +39,9 @@
           "moe": {
             "comm_backend": "uccl",
             "comm_token_chunk": 4096
+          },
+          "lm_head": {
+            "cross_entropy": false
           }
         },
         "optimizer": {
