@@ -25,7 +25,9 @@
           },
           "moe": {
             "sonicmoe": true,
-            "comm_sms": 96
+            "comm_sms": 96,
+            "ultraep_spares": 2,
+            "ultraep_ipc_symm": true
           }
         },
         "ep_size": 2,

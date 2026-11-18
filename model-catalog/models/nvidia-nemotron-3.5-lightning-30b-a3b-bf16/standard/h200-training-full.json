@@ -28,7 +28,8 @@
           },
           "moe": {
             "sonicmoe": true,
-            "comm_sms": 64
+            "comm_sms": 64,
+            "expert_replicas": 4
           }
         },
         "optimizer": {

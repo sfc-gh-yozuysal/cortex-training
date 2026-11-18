@@ -24,7 +24,8 @@
             "cross_entropy": false
           },
           "moe": {
-            "comm_sms": 96
+            "comm_sms": 96,
+            "expert_replicas": 2
           }
         },
         "ep_size": 2,

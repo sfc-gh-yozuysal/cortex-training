@@ -47,7 +47,9 @@
           },
           "moe": {
             "sonicmoe": true,
-            "comm_sms": 64
+            "comm_sms": 64,
+            "ultraep_spares": 2,
+            "ultraep_ipc_symm": true
           }
         },
         "mb_spec": {
