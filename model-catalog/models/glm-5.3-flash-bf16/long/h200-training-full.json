@@ -14,7 +14,7 @@
         "ep_size": 32,
         "gradient_clipping": 1.0,
         "model_provider": "arctic",
-        "cuda_allocator_conf": "expandable_segments:True",
+        "cuda_allocator_conf": "expandable_segments:True,pinned_max_round_threshold_mb:64",
         "model_options": {
           "attention": {
             "backend": "sparse_mla"
