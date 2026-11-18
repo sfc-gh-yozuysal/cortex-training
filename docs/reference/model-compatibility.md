@@ -19,6 +19,7 @@ for a specific workload.
 | `Qwen/Qwen3.8-27B` | dense | standard, long | standard, long | 262,144 |
 | `Qwen/Qwen3-30B-A3B` | MoE | standard | standard | — |
 | `Qwen/Qwen3.6-35B-A3B` | MoE | standard, long | standard, long | 262,144 |
+| `Qwen/Qwen3.8-Flash-Next` | MoE | standard, long | standard, long | 262,144 |
 | `deepseek-ai/DeepSeek-V4.1-Flash-1017` | MoE | standard, long | standard, long | 262,144 |
 | `openai/gpt-oss-120b` | MoE | — | long | 131,072 |
 | `google/gemma-3-4b-it` | dense | standard, long | standard, long | 131,072 |

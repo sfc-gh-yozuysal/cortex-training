@@ -130,6 +130,10 @@ models:
       - inference-endpoint
       - math-grpo
     last_validated: null
+  - id: Qwen/Qwen3.8-Flash-Next
+    training: true
+    inference: true
+    last_validated: 2026-11-05
   - id: thinkingmachines/Inkling-2-Small-MXFP8
     training: true
     inference: true

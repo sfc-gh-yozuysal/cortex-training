@@ -64,6 +64,16 @@ EXPECTED_FILES = {
     "Qwen/Qwen3.5-9B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
     "Qwen/Qwen3.6-35B-A3B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
     "Qwen/Qwen3.8-27B": _TRAINABLE_LONG + _TRAINABLE_STANDARD,
+    "Qwen/Qwen3.8-Flash-Next": [
+        "standard/h200-inference-full",
+        "standard/h200-inference-lora",
+        "standard/h200-training-full",
+        "standard/h200-training-lora",
+        "long/h200-inference-full",
+        "long/h200-inference-lora",
+        "long/h200-training-full",
+        "long/h200-training-lora",
+    ],
     "Qwen/Qwen3-30B-A3B": _TRAINABLE_STANDARD,
     "deepseek-ai/DeepSeek-V4.1-Flash-1017": [
         "standard/h200-inference-lora",
@@ -120,11 +130,11 @@ def _config(body: dict) -> dict:
 
 def test_checked_in_catalog_is_valid():
     assert validate_catalog() == {
-        "models": 22,
-        "files": 135,
-        "training": 65,
-        "inference": 70,
-        "rl": 63,
+        "models": 23,
+        "files": 143,
+        "training": 69,
+        "inference": 74,
+        "rl": 67,
         "distillation": 1,
     }
 
@@ -161,6 +171,7 @@ def test_catalog_models_include_license_links():
         "Qwen/Qwen3.5-9B": "Apache 2.0",
         "Qwen/Qwen3.6-35B-A3B": "Apache 2.0",
         "Qwen/Qwen3.8-27B": "Apache 2.0",
+        "Qwen/Qwen3.8-Flash-Next": "Qwen Community License 1.0",
         "Qwen/Qwen3-30B-A3B": "Apache 2.0",
         "Qwen/Qwen3-4B-Instruct-2507": "Apache 2.0",
         "deepseek-ai/DeepSeek-V4.1-Flash-1017": "MIT",
@@ -190,6 +201,7 @@ def test_moe_models_record_router_replay_geometry():
         "Qwen/Qwen3-30B-A3B": {"num_moe_layers": 48, "topk": 8, "num_experts": 128},
         "Qwen/Qwen3.6-35B-A3B": {"num_moe_layers": 40, "topk": 8, "num_experts": 256},
         "deepseek-ai/DeepSeek-V4.1-Flash-1017": {"num_moe_layers": 40, "topk": 6, "num_experts": 384},
+        "Qwen/Qwen3.8-Flash-Next": {"num_moe_layers": 48, "topk": 10, "num_experts": 512},
         "openai/gpt-oss-120b": {"num_moe_layers": 36, "topk": 4, "num_experts": 128},
         "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": {"num_moe_layers": 23, "topk": 6, "num_experts": 128},
         "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16": {"num_moe_layers": 23, "topk": 6, "num_experts": 128},
@@ -214,6 +226,7 @@ def test_validation_dates_match_completed_live_smokes():
         ("Qwen/Qwen3.5-4B", "standard/h200-training-lora"): "2026-09-02",
         ("Qwen/Qwen3.5-9B", "long/h200-inference-full"): "2026-10-14",
         ("Qwen/Qwen3.6-35B-A3B", "standard/h200-training-lora"): "2026-11-05",
+        ("Qwen/Qwen3.8-Flash-Next", "long/h200-training-full"): "2026-11-05",
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "long/h200-training-full"): "2026-10-23",
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "long/h200-training-lora"): "2026-10-26",
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "standard/h200-training-full"): "2026-10-23",
@@ -280,6 +293,10 @@ def test_files_keep_their_source_sequence_lengths():
         ("Qwen/Qwen3.8-27B", "long", "training"): 262144,
         ("Qwen/Qwen3.8-27B", "standard", "inference"): 65536,
         ("Qwen/Qwen3.8-27B", "standard", "training"): 65536,
+        ("Qwen/Qwen3.8-Flash-Next", "long", "inference"): 262144,
+        ("Qwen/Qwen3.8-Flash-Next", "long", "training"): 262144,
+        ("Qwen/Qwen3.8-Flash-Next", "standard", "inference"): 65536,
+        ("Qwen/Qwen3.8-Flash-Next", "standard", "training"): 65536,
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "long", "inference"): 262144,
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "long", "training"): 262144,
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "standard", "inference"): 65536,
@@ -654,6 +671,8 @@ H200_SFT_FILES = {
     ("Qwen/Qwen3.8-27B", "long/h200-training-full"),
     ("Qwen/Qwen3.8-27B", "long/h200-training-lora"),
     ("Qwen/Qwen3.8-27B", "standard/h200-training-full"),
+    ("Qwen/Qwen3.8-Flash-Next", "long/h200-training-lora"),
+    ("Qwen/Qwen3.8-Flash-Next", "standard/h200-training-full"),
     ("google/gemma-3-4b-it", "long/h200-training-full"),
     ("google/gemma-3-4b-it", "long/h200-training-lora"),
     ("google/gemma-3-4b-it", "standard/h200-training-full"),
@@ -684,6 +703,7 @@ _DEEPSPEED_FORK_FIELDS = ("optimizer_state_swap", "reduce_to_owners", "record_re
 # The files that run on DeepSpeed jaelee/zero-memory-upstream (its optimizer_state_swap); every other
 # file runs on stock DeepSpeed.
 H200_SFT_DEEPSPEED_FORK = {
+    ("Qwen/Qwen3.8-Flash-Next", "standard/h200-training-full"),
     ("zai-org/GLM-5.3-Flash-BF16", "long/h200-training-full"),
     ("zai-org/GLM-5.3-Flash-BF16", "standard/h200-training-full"),
 }
@@ -879,7 +899,7 @@ def _invalid(catalog_dir: Path, match: str) -> str:
 
 
 def test_copied_catalog_is_valid(catalog):
-    assert validate_catalog(catalog)["models"] == 22
+    assert validate_catalog(catalog)["models"] == 23
 
 
 def test_distillation_jobs_build_with_make_distillation_config(catalog):
