@@ -405,6 +405,107 @@ examples:
 """
 
 
+def _add_model_common_args(parser: argparse.ArgumentParser) -> None:
+    """Add ``--database``, ``--schema``, and ``--compact`` to a ``model`` subcommand."""
+    parser.add_argument(
+        "--database",
+        default=argparse.SUPPRESS,
+        help="Database of the training job and of the model (unless --model names one).",
+    )
+    parser.add_argument(
+        "--schema",
+        default=argparse.SUPPRESS,
+        help="Schema of the training job and of the model (unless --model names one).",
+    )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Print compact JSON instead of pretty JSON.",
+    )
+
+
+def _add_model_parsers(subparsers) -> None:
+    """Add the ``model`` command group: register, wait, cancel, list, drop."""
+    model = subparsers.add_parser(
+        "model",
+        help="Register training checkpoints as Model Registry versions, and manage them.",
+    )
+    commands = model.add_subparsers(dest="model_command", required=True)
+
+    register = commands.add_parser(
+        "register",
+        help="Register a saved weights-only checkpoint as a model version.",
+        description=(
+            "Register a completed weights-only checkpoint as a Snowflake Model "
+            "Registry version. Without --model and --version the version is "
+            "JOB_<job>/CP_<checkpoint>, in the job's database and schema. Prints "
+            "the registration's operation ID; --wait waits for it to finish."
+        ),
+    )
+    _add_model_common_args(register)
+    register.add_argument("--job", dest="job_id", required=True, help="The training job ID.")
+    register.add_argument(
+        "--checkpoint", dest="checkpoint_id", required=True, help="The saved checkpoint ID."
+    )
+    register.add_argument(
+        "--model", help="Target model, [[database.]schema.]name. Created if it does not exist."
+    )
+    register.add_argument("--version", dest="model_version", help="Target version name.")
+    register.add_argument("--comment", help="Comment stored on the new version.")
+    register.add_argument(
+        "--wait", action="store_true", help="Wait until the registration finishes."
+    )
+    _add_model_deployment_timeout_arg(register)
+
+    wait = commands.add_parser(
+        "wait", help="Wait for a registration to finish and print its result."
+    )
+    _add_model_common_args(wait)
+    _add_model_deployment_timeout_arg(wait)
+    wait.add_argument("operation", metavar="OPERATION", help="The registration's operation ID.")
+
+    cancel = commands.add_parser(
+        "cancel", help="Cancel a running registration. Nothing of it is left behind."
+    )
+    _add_model_common_args(cancel)
+    cancel.add_argument("operation", metavar="OPERATION", help="The registration's operation ID.")
+
+    list_versions = commands.add_parser(
+        "list",
+        help="List registered versions: kind, base model, and source job and checkpoint.",
+    )
+    _add_model_common_args(list_versions)
+    list_versions.add_argument(
+        "--job", dest="job_id", help="Only versions registered from this training job."
+    )
+    list_versions.add_argument(
+        "--kind",
+        type=str.upper,
+        choices=("FULL", "LORA"),
+        help="Only versions of this kind.",
+    )
+
+    drop = commands.add_parser(
+        "drop",
+        help="Drop a registered model, or one version with MODEL/VERSION.",
+        description=(
+            "Drop a registered model, or one of its versions (MODEL/VERSION). "
+            "If named model deployments still serve it, nothing is dropped "
+            "unless --force: running replicas keep serving their local copy, "
+            "but a restart or scale-out fails. EVALUATION deployments keep no "
+            "record of the version they serve, so they are not checked."
+        ),
+    )
+    _add_model_common_args(drop)
+    drop.add_argument("target", metavar="MODEL[/VERSION]", help="[[database.]schema.]name[/version]")
+    drop.add_argument(
+        "--force",
+        action="store_true",
+        help="Drop even if model deployments still serve it.",
+    )
+
+
 def build_parser(
     *,
     prog: str = "cortex-training",
@@ -851,6 +952,15 @@ def build_parser(
         action="store_true",
         help="Validate the spec and print it as it would be sent; create nothing.",
     )
+    deployment_create.add_argument(
+        "--register",
+        action="store_true",
+        help=(
+            "For a checkpoint source: first register the checkpoint as a model "
+            "version (named JOB_<job>/CP_<checkpoint>), wait for it, then deploy "
+            "that registered version."
+        ),
+    )
     _add_model_deployment_timeout_arg(deployment_create)
 
     deployment_list = deployment_commands.add_parser(
@@ -919,6 +1029,8 @@ def build_parser(
     )
     _add_model_deployment_common_args(deployment_drop)
     _add_model_deployment_positional_arg(deployment_drop)
+
+    _add_model_parsers(subparsers)
 
     login = subparsers.add_parser(
         "login",
@@ -2395,6 +2507,8 @@ def _cmd_model_deployment_create(
         spec = ModelDeploymentSpec.from_dict(raw_spec)
         _print_json(spec.to_public_spec(), stdout, compact=args.compact)
         return 0
+    if getattr(args, "register", False):
+        raw_spec = _register_then_registry_source(client, raw_spec)
     output = client.create_model_deployment(raw_spec)
     if args.wait:
         deployment_id = output[OUT_DEPLOYMENT]
@@ -2507,6 +2621,91 @@ def _cmd_model_deployment(
     if command == "drop":
         return _cmd_model_deployment_drop(args, client, stdout)
     raise ValueError(f"unknown model-deployment command: {command}")
+
+
+def _registration_exit_code(result: Mapping[str, Any]) -> int:
+    """0 for a finished or already-made version, 1 for a failed or cancelled one."""
+    return 1 if result.get("status") in ("FAILED", "CANCELLED") else 0
+
+
+def _cmd_model_register(args: argparse.Namespace, client, stdout: TextIO) -> int:
+    """Run ``model register``, optionally waiting for it to finish."""
+    result = client.register_checkpoint(
+        args.job_id,
+        args.checkpoint_id,
+        model=args.model,
+        version=args.model_version,
+        comment=args.comment,
+    )
+    if args.wait and result.get("operation"):
+        try:
+            result = client.wait_for_registration(result["operation"])
+        except KeyboardInterrupt:
+            _print_json(result, stdout, compact=args.compact)
+            stdout.flush()
+            raise _InterruptedCommand(
+                f"registration {result['operation']} keeps running; "
+                f"check it with `model wait {result['operation']}`"
+            ) from None
+    _print_json(result, stdout, compact=args.compact)
+    return _registration_exit_code(result)
+
+
+def _cmd_model(args: argparse.Namespace, client, stdout: TextIO) -> int:
+    """Dispatch a ``model`` subcommand to its handler."""
+    from cortex_training.model_registry import split_model_and_version
+
+    command = args.model_command
+    if command == "register":
+        return _cmd_model_register(args, client, stdout)
+    if command == "wait":
+        result = client.wait_for_registration(args.operation)
+        _print_json(result, stdout, compact=args.compact)
+        return _registration_exit_code(result)
+    if command == "cancel":
+        result = client.cancel_registration(args.operation)
+        _print_json(result, stdout, compact=args.compact)
+        return 0
+    if command == "list":
+        rows = client.list_registered_versions(job_id=args.job_id, kind=args.kind)
+        _print_json({"versions": rows}, stdout, compact=args.compact)
+        return 0
+    if command == "drop":
+        model, version = split_model_and_version(args.target)
+        result = client.drop_registered_model(model, version, force=args.force)
+        _print_json(result, stdout, compact=args.compact)
+        return 0 if result.get("dropped") else 1
+    raise ValueError(f"unknown model command: {command}")
+
+
+def _register_then_registry_source(client, raw_spec: dict[str, Any]) -> dict[str, Any]:
+    """For ``model-deployment create --register``: register the checkpoint, then point the spec at it.
+
+    The checkpoint is registered under the default names (``JOB_<job>`` /
+    ``CP_<checkpoint>``), or reused if this checkpoint already made that
+    version. Returns the spec with a ``registry_model`` source.
+    """
+    from cortex_training.model_registry import default_model_name
+
+    source = raw_spec.get("source") if isinstance(raw_spec, dict) else None
+    if not isinstance(source, dict) or source.get("type") != "checkpoint":
+        raise ValueError("--register needs a spec whose source.type is 'checkpoint'")
+    job_id, checkpoint_id = source.get("job_id"), source.get("checkpoint_id")
+    result = client.register_checkpoint(job_id, checkpoint_id)
+    if result.get("operation"):
+        result = client.wait_for_registration(result["operation"])
+        if result.get("status") != "SUCCEEDED":
+            raise RuntimeError(
+                f"registering checkpoint {checkpoint_id} {result.get('status', '').lower()}: "
+                f"{result.get('error', '')}".rstrip(": ")
+            )
+    model = default_model_name(job_id)
+    version = client.find_registered_version(model, job_id, checkpoint_id)
+    if version is None:
+        raise RuntimeError(
+            f"checkpoint {checkpoint_id} was registered, but its version of {model} was not found"
+        )
+    return {**raw_spec, "source": {"type": "registry_model", "model": model, "version": version}}
 
 
 def _is_unsupported_hardware(exc: BaseException) -> bool:
@@ -2656,6 +2855,8 @@ def _run_command(
         return _cmd_download_metrics(args, client, stdout, stderr)
     if args.command == "model-deployment":
         return _cmd_model_deployment(args, client, stdout, stdin)
+    if args.command == "model":
+        return _cmd_model(args, client, stdout)
     raise ValueError(f"unknown command: {args.command}")
 
 

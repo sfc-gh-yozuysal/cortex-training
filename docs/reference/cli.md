@@ -167,6 +167,18 @@ cortex-training model-deployment download-metrics sf-ct-DEPLOYMENT_UUID --output
 cortex-training model-deployment drop sf-ct-DEPLOYMENT_UUID
 ```
 
+### [Registered Models](#registered-models)
+
+```bash
+cortex-training model register --job JOB_UUID --checkpoint CHECKPOINT_ID --wait
+cortex-training model register --job JOB_UUID --checkpoint CHECKPOINT_ID --model CORTEX_TRAINING_DB.PUBLIC.SUPPORT_BOT --version V1 --comment "epoch 3"
+cortex-training model wait OPERATION_ID
+cortex-training model cancel OPERATION_ID
+cortex-training model list --job JOB_UUID --kind LORA
+cortex-training model drop SUPPORT_BOT/V1
+cortex-training model-deployment create --spec deployment-checkpoint.json --register --wait
+```
+
 ### [Output And Help](#json-output-and-help)
 
 ```bash
@@ -1191,6 +1203,47 @@ $BASE_URL/models` can return an empty list while a deployment is `READY`
 ([known limitation 6](rest-api.md#15-known-limitations)). The full request and
 response behavior is in
 [REST API reference section 14.8](rest-api.md#148-calling-a-deployment).
+
+### Registered Models
+
+`cortex-training model` turns a saved `weights-only` checkpoint into a
+Snowflake Model Registry version (type `CORTEX_TRAINING`) and manages those
+versions, with no SQL. See
+[REST API reference section 16](rest-api.md#16-registered-model-versions).
+
+`register` needs `--job` and `--checkpoint`. `--model` is
+`[[database.]schema.]name` (the job's database and schema when left out) and
+is created if it does not exist; `--version` names the version. Without them
+the version is `JOB_<job>/CP_<checkpoint>`, with the hyphens removed and the
+IDs upper-cased. The copy runs on the server, so `register` prints at once:
+
+```json
+{"operation": "OPERATION_ID", "status": "RUNNING"}
+```
+
+`--wait` (or `model wait OPERATION_ID`) polls until the registration ends and
+prints `SUCCEEDED`, or `FAILED` / `CANCELLED` with the server's `error`, and
+exits `1` for those two. Registering the same checkpoint into the same version
+again prints `{"status": "ALREADY_REGISTERED", "message": ...}` and exits `0`.
+`model cancel OPERATION_ID` stops a running registration; a failed or
+cancelled registration leaves no model or version behind.
+
+`list` shows every registered version in the schema with its `kind` (`FULL`
+or `LORA`), `base_model`, `source_job`, `source_checkpoint`, `created_on`,
+and `comment`. `--job` and `--kind` filter the rows.
+
+`drop MODEL` drops a model and `drop MODEL/VERSION` one version. If a named
+model deployment still serves it, nothing is dropped and `drop` exits `1`,
+listing those deployments: running replicas keep serving their local copy,
+but a restart or scale-out fails. `--force` drops anyway. EVALUATION
+deployments keep no record of the version they serve, so they are not
+checked.
+
+`model-deployment create` also takes a registered version as its source,
+`{"type": "registry_model", "model": "[[database.]schema.]name", "version": "V1"}`
+(`gpus_per_replica` must be `1`). `model-deployment create --register` with a
+checkpoint source first registers the checkpoint under the default names,
+waits for it, and then deploys that version.
 
 ### Job TUI
 

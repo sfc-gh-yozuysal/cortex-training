@@ -48,15 +48,20 @@ DEPLOYMENT_CLASS = "class"
 DEPLOYMENT_MIN_REPLICAS = "min_replicas"
 DEPLOYMENT_GPUS_PER_REPLICA = "gpus_per_replica"
 DEPLOYMENT_GPU_TYPE = "gpu_type"
-# Keys inside spec.source, and its two source types. A checkpoint source names
+# Keys inside spec.source, and its three source types. A checkpoint source names
 # no model: the server already knows the source job's model, so the client
-# reads it.
+# reads it. A registry_model source names a registered Model Registry version
+# by model ([[database.]schema.]name) and version; the server reads its base
+# model from the version.
 SOURCE_TYPE = "type"
 SOURCE_MODEL = "model"
+SOURCE_VERSION = "version"
 SOURCE_JOB_ID = "job_id"
 SOURCE_CHECKPOINT_ID = "checkpoint_id"
 SOURCE_TYPE_BASE_MODEL = "base_model"
 SOURCE_TYPE_CHECKPOINT = "checkpoint"
+SOURCE_TYPE_REGISTRY_MODEL = "registry_model"
+SOURCE_TYPES = (SOURCE_TYPE_BASE_MODEL, SOURCE_TYPE_CHECKPOINT, SOURCE_TYPE_REGISTRY_MODEL)
 # Keys inside spec.inference.
 INFERENCE_MAX_SEQ_LEN = "max_seq_len"
 # Keys of the sampling sub-job the server stores for a deployment.
@@ -68,6 +73,14 @@ WIRE_TENSOR_PARALLEL_SIZE = "tensor_parallel_size"
 WIRE_MAX_MODEL_LEN = "max_model_len"
 WIRE_SOURCE_CHECKPOINT_INFO = "source_checkpoint_info"
 WIRE_SOURCE_JOB_ID = "source_job_id"
+# Set by the server on a deployment that serves a registered Model Registry
+# version: the version's folders (not its name).
+WIRE_MODEL_REGISTRY = "model_registry"
+# Keys of the deployments route's request body (``POST /deployments``), used
+# for registry_model sources.
+WIRE_REGISTRY_MODEL = "registry_model"
+WIRE_REGISTRY_MODEL_NAME = "name"
+WIRE_REGISTRY_MODEL_VERSION = "version"
 WIRE_CHECKPOINT_ID = "checkpoint_id"
 WIRE_DEPLOYMENT_CLASS = "deployment_class"
 WIRE_MAX_SEQ_LEN = "max_seq_len"
@@ -215,6 +228,9 @@ class ModelDeploymentSpec:
     source_job_id: str | None = None
     checkpoint_id: str | None = None
     deployment_class: str = MODEL_DEPLOYMENT_CLASS
+    # A registry_model source's model ([[database.]schema.]name) and version.
+    registry_model: str | None = None
+    registry_version: str | None = None
 
     @classmethod
     def from_dict(cls, value: Any) -> "ModelDeploymentSpec":
@@ -250,6 +266,7 @@ class ModelDeploymentSpec:
             allowed={
                 SOURCE_TYPE,
                 SOURCE_MODEL,
+                SOURCE_VERSION,
                 SOURCE_JOB_ID,
                 SOURCE_CHECKPOINT_ID,
             },
@@ -271,17 +288,28 @@ class ModelDeploymentSpec:
             string_fields = {
                 key: source[key] for key in (SOURCE_JOB_ID, SOURCE_CHECKPOINT_ID)
             }
+        elif source_type == SOURCE_TYPE_REGISTRY_MODEL:
+            _strict_object(
+                source,
+                location=SPEC_SOURCE,
+                required={SOURCE_TYPE, SOURCE_MODEL, SOURCE_VERSION},
+            )
+            string_fields = {key: source[key] for key in (SOURCE_MODEL, SOURCE_VERSION)}
         else:
             raise ValueError(
-                f"{SPEC_SOURCE}.{SOURCE_TYPE} must be either "
-                f"'{SOURCE_TYPE_BASE_MODEL}' or '{SOURCE_TYPE_CHECKPOINT}'"
+                f"{SPEC_SOURCE}.{SOURCE_TYPE} must be one of "
+                + ", ".join(f"'{t}'" for t in SOURCE_TYPES)
             )
         # Every source field must be a non-empty string; the error names the field.
         for key, field_value in string_fields.items():
             if not isinstance(field_value, str) or not field_value.strip():
                 raise ValueError(f"{SPEC_SOURCE}.{key} must be a non-empty string")
-        # A checkpoint's model is read from its source job at create time.
-        model_name = string_fields.get(SOURCE_MODEL)
+        # A checkpoint's model is read from its source job at create time, and
+        # a registered version's base model by the server from the version.
+        registry = source_type == SOURCE_TYPE_REGISTRY_MODEL
+        model_name = None if registry else string_fields.get(SOURCE_MODEL)
+        registry_model = string_fields.get(SOURCE_MODEL) if registry else None
+        registry_version = string_fields.get(SOURCE_VERSION) if registry else None
         source_job_id = string_fields.get(SOURCE_JOB_ID)
         checkpoint_id = string_fields.get(SOURCE_CHECKPOINT_ID)
         # Which models can be deployed (and how many GPUs each needs) is left to
@@ -331,6 +359,13 @@ class ModelDeploymentSpec:
         # shape fails before anything is sent.
         if gpus_per_replica not in MODEL_DEPLOYMENT_GPU_WIDTHS:
             raise ValueError(f"{gpus_per_replica_location} must be one of 1, 2, 4, or 8")
+        if registry and gpus_per_replica != 1:
+            # The deployments route that serves a registered version takes no
+            # per-replica GPU count; the server chooses it.
+            raise ValueError(
+                f"{gpus_per_replica_location} must be 1 for a "
+                f"'{SOURCE_TYPE_REGISTRY_MODEL}' source"
+            )
         total_gpus = min_replicas * gpus_per_replica
         if total_gpus > 8 and total_gpus % 8 != 0:
             raise ValueError(
@@ -348,6 +383,8 @@ class ModelDeploymentSpec:
             source_job_id=source_job_id,
             checkpoint_id=checkpoint_id,
             deployment_class=deployment_class,
+            registry_model=registry_model,
+            registry_version=registry_version,
         )
 
     @property
@@ -367,6 +404,12 @@ class ModelDeploymentSpec:
                 SOURCE_TYPE: SOURCE_TYPE_CHECKPOINT,
                 SOURCE_JOB_ID: self.source_job_id,
                 SOURCE_CHECKPOINT_ID: self.checkpoint_id,
+            }
+        if self.source_type == SOURCE_TYPE_REGISTRY_MODEL:
+            return {
+                SOURCE_TYPE: SOURCE_TYPE_REGISTRY_MODEL,
+                SOURCE_MODEL: self.registry_model,
+                SOURCE_VERSION: self.registry_version,
             }
         return {SOURCE_TYPE: self.source_type, SOURCE_MODEL: self.model_name}
 
@@ -419,4 +462,28 @@ class ModelDeploymentSpec:
             "idle_timeout_seconds": 0,
             JOB_FIELD_HARDWARE: self.gpu_type,
             "sub_job_configs": [sub_job.to_wire()],
+        }
+
+    def _to_deployments_body(self) -> dict[str, Any]:
+        """Build the ``POST /deployments`` request body for a registry_model source.
+
+        The server reads the version's base model and folders, so only the
+        version's name, the capacity, and the sequence length are sent.
+        """
+        if self.source_type != SOURCE_TYPE_REGISTRY_MODEL:
+            raise ValueError(f"only a '{SOURCE_TYPE_REGISTRY_MODEL}' source uses the deployments route")
+        return {
+            SPEC_DEPLOYMENT: {
+                DEPLOYMENT_CLASS: self.deployment_class,
+                DEPLOYMENT_MIN_REPLICAS: self.min_replicas,
+                DEPLOYMENT_GPU_TYPE: self.gpu_type,
+            },
+            SPEC_SOURCE: {
+                SOURCE_TYPE: SOURCE_TYPE_REGISTRY_MODEL,
+                WIRE_REGISTRY_MODEL: {
+                    WIRE_REGISTRY_MODEL_NAME: self.registry_model,
+                    WIRE_REGISTRY_MODEL_VERSION: self.registry_version,
+                },
+            },
+            SPEC_INFERENCE: {INFERENCE_MAX_SEQ_LEN: self.max_seq_len},
         }
