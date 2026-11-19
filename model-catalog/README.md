@@ -74,8 +74,8 @@ The validator checks:
 These training files are measured H200 SFT throughput finals: for each file, the
 job with the most tokens per GPU found without GDRCopy, on the fewest nodes it
 fits. Every full-weight file keeps FP32 master weights and FP32 Adam moments.
-The files marked "fork" below run on DeepSpeed `jaelee/zero-memory-upstream`
-(`b9af87b1`, on DeepSpeed master `c289ad62`): its ZeRO-1/2
+The files marked "fork" below run on DeepSpeed `jaelee/v3/zero-memory`
+(`61c11b39`, on DeepSpeed master `0fe80cb9`): its ZeRO-1/2
 `optimizer_state_swap` keeps the FP32 optimizer state in pinned host memory and
 streams it through the step. Every other file runs on stock DeepSpeed.
 Standard files keep their tier's `max_seq_len`. Long files, full and LoRA, train
@@ -102,12 +102,12 @@ The other files in the table use 8 GPUs. The MedGemma files are Gemma 3 4B's
 bodies under their own model ID (same architecture; not measured on the
 MedGemma checkpoints).
 
-The table's MoE full file that dispatches through UCCL-EP at 262,144 tokens,
-GLM-5.3-Flash-BF16's long full file, keeps the GPUs nearly full. It needs a
-UCCL build with upstream's 18b588a ("Keep the D2H handle table in device
-memory", #1085). With UCCL a3d520e alone, an allocation that finds the GPU full
-moves the EP handle table to host memory, and the next expert-parallel kernel
-faults (Xid 31, an illegal memory access).
+The GLM-5.3-Flash-BF16 and Qwen3.8-Flash-Next long full files train
+262,144-token rows with UCCL-EP expert dispatch. They need a UCCL build with
+upstream's 18b588a ("Keep the D2H handle table in device memory", #1085). With
+UCCL a3d520e alone, an allocation that finds the GPU full moves the EP handle
+table to host memory, and the next expert-parallel kernel faults (Xid 31, an
+illegal memory access).
 
 The MoE LoRA files train routed-expert LoRA through `target_parameters`, with
 one exception: the Qwen3.6-35B-A3B long LoRA file keeps the attention-only
@@ -141,8 +141,8 @@ rows on eight GPUs: Gemma 4's used 16 before and Qwen3.8-27B's 32.
 They need server changes that are not yet in a released image, the stacked
 branches:
 
-- Arctic-Platform `jaelee/stack/18-gemma-4` (on main `316a25c`)
-- dss-platform `jaelee/stack/18-gemma-4` (on main `e7ca019`)
+- Arctic-Platform `jaelee/v3/stack/15-gemma-4` (on main `3e2ba2bf`)
+- dss-platform `jaelee/v3/stack/15-gemma-4` (on main `7731f9c`)
 
 The files marked "fork" need that DeepSpeed branch in the image; the others run
 on the stock release and set no DeepSpeed fork field. An
