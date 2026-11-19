@@ -176,7 +176,7 @@ cortex-training model wait OPERATION_ID
 cortex-training model cancel OPERATION_ID
 cortex-training model list --job JOB_UUID --kind LORA
 cortex-training model drop SUPPORT_BOT/V1
-cortex-training model-deployment create --spec deployment-checkpoint.json --register --wait
+cortex-training model-deployment create --spec production-checkpoint.json --wait   # registers, then deploys
 ```
 
 ### [Output And Help](#json-output-and-help)
@@ -1093,8 +1093,9 @@ cortex-training model-deployment create \
 customer-supplied stage credentials are not accepted. A checkpoint source
 names only `job_id` and `checkpoint_id`; the model is read from the source
 job. Base-model sources use `{"type": "base_model", "model": "Qwen/Qwen3-1.7B"}`
-instead. The `deployment` object sets `class` (only `EVALUATION` is supported
-today), `min_replicas`, `gpus_per_replica` (1, 2, 4, or 8), and `gpu_type`
+instead. The `deployment` object sets `class` (`EVALUATION`, or `PRODUCTION`
+for a checkpoint or registered-version source; see
+[Registered Models](#registered-models)), `min_replicas`, `gpus_per_replica` (1, 2, 4, or 8), and `gpu_type`
 (`H200`, `B200`, or `B300`, in any case); `min_replicas * gpus_per_replica`
 must be at most 8 or a multiple of 8. `create --help` shows a full example
 spec, and `create --dry-run` checks a spec and prints it without connecting.
@@ -1241,9 +1242,33 @@ checked.
 
 `model-deployment create` also takes a registered version as its source,
 `{"type": "registry_model", "model": "[[database.]schema.]name", "version": "V1"}`
-(`gpus_per_replica` must be `1`). `model-deployment create --register` with a
-checkpoint source first registers the checkpoint under the default names,
-waits for it, and then deploys that version.
+(`gpus_per_replica` must be `1`). The client sends the model fully qualified,
+filling in `--database` and `--schema`.
+
+A `PRODUCTION` deployment with a checkpoint source registers the checkpoint
+first: it registers it as `JOB_<job>/CP_<checkpoint>` (or `--model` /
+`--version`), waits for the registration, and deploys that version, in one
+command. Registering the same checkpoint again reuses its version. A
+`PRODUCTION` deployment may set `deployment.name`, uses `gpus_per_replica` 1,
+and cannot use a `base_model` source. An `EVALUATION` deployment with a
+checkpoint source still serves the checkpoint directly; `--register` makes it
+register first too.
+
+```bash
+cortex-training model-deployment create --spec production-checkpoint.json --wait
+```
+
+```json
+{
+  "deployment": {"class": "PRODUCTION", "name": "SUPPORT_BOT", "min_replicas": 2,
+                 "gpus_per_replica": 1, "gpu_type": "H200"},
+  "source": {"type": "checkpoint", "job_id": "TRAINING_JOB_UUID", "checkpoint_id": "CHECKPOINT_ID"},
+  "inference": {"max_seq_len": 8192}
+}
+```
+
+`model-deployment drop` ends a `PRODUCTION` deployment through the
+deployments route, which also frees its name; job cancel refuses it.
 
 ### Job TUI
 

@@ -500,8 +500,8 @@ class RegistryClient:
         self.calls.append(("find", model, job_id, checkpoint_id))
         return "CP_1"
 
-    def create_model_deployment(self, spec):
-        self.calls.append(("create", spec))
+    def create_model_deployment(self, spec, **registration):
+        self.calls.append(("create", spec, registration))
         return {"deployment": "sf-ct-x", "status": "PENDING", "base_url": self.model_deployment_base_url}
 
 
@@ -553,12 +553,12 @@ def test_cli_drop_is_held_back_without_force():
     assert fake.calls[-1] == ("drop", "DB.SCH.M", "V1", True)
 
 
-def checkpoint_spec_file(tmp_path: Path) -> Path:
+def checkpoint_spec_file(tmp_path: Path, deployment_class: str = "EVALUATION") -> Path:
     path = tmp_path / "spec.json"
     path.write_text(
         json.dumps(
             {
-                "deployment": {"class": "EVALUATION", "min_replicas": 1, "gpus_per_replica": 1, "gpu_type": "H200"},
+                "deployment": {"class": deployment_class, "min_replicas": 1, "gpus_per_replica": 1, "gpu_type": "H200"},
                 "source": {"type": "checkpoint", "job_id": JOB_ID, "checkpoint_id": "cp-1"},
                 "inference": {"max_seq_len": 2048},
             }
@@ -567,29 +567,126 @@ def checkpoint_spec_file(tmp_path: Path) -> Path:
     return path
 
 
-def test_cli_deployment_create_register_deploys_the_registered_version(tmp_path):
+def test_cli_deployment_create_passes_register_and_names(tmp_path):
     fake = RegistryClient()
     code, _, _ = run_cli(
-        fake, "model-deployment", "create", "--spec", str(checkpoint_spec_file(tmp_path)), "--register"
+        fake, "model-deployment", "create", "--spec", str(checkpoint_spec_file(tmp_path)),
+        "--register", "--model", "SUPPORT_BOT", "--version", "V3",
     )
     assert code == 0
-    kinds = [c[0] for c in fake.calls]
-    assert kinds == ["register", "wait", "find", "create"]
-    assert fake.calls[-1][1]["source"] == {
-        "type": "registry_model",
-        "model": registry.default_model_name(JOB_ID),
-        "version": "CP_1",
+    assert fake.calls[-1][2] == {"register": True, "model": "SUPPORT_BOT", "version": "V3"}
+
+
+def test_cli_deployment_create_production_needs_no_flag(tmp_path):
+    fake = RegistryClient()
+    code, _, _ = run_cli(
+        fake, "model-deployment", "create", "--spec", str(checkpoint_spec_file(tmp_path, "PRODUCTION"))
+    )
+    assert code == 0
+    spec, registration = fake.calls[-1][1], fake.calls[-1][2]
+    assert spec["deployment"]["class"] == "PRODUCTION" and registration == {}
+
+
+def production_checkpoint_spec(**deployment) -> dict:
+    return {
+        "deployment": {"class": "PRODUCTION", "min_replicas": 2, "gpus_per_replica": 1, "gpu_type": "H200", **deployment},
+        "source": {"type": "checkpoint", "job_id": JOB_ID, "checkpoint_id": "cp-1"},
+        "inference": {"max_seq_len": 8192},
     }
 
 
-def test_cli_deployment_create_register_stops_when_the_registration_fails(tmp_path):
-    fake = RegistryClient(final="FAILED")
-    code, _, err = run_cli(
-        fake, "model-deployment", "create", "--spec", str(checkpoint_spec_file(tmp_path)), "--register"
+def test_production_checkpoint_is_registered_then_deployed_from_the_version():
+    instance = client()
+    instance.register_checkpoint_for_deployment = MagicMock(return_value=("DB.SCH.JOB_X", "CP_1"))
+    instance.create_job_from_body = MagicMock()
+    instance._session = MagicMock()
+    instance._session.post.return_value = http_response(200, {"job_id": DEPLOYMENT_JOB_ID})
+
+    out = instance.create_model_deployment(production_checkpoint_spec(name="SUPPORT_BOT"), model="M", version="V3")
+
+    instance.register_checkpoint_for_deployment.assert_called_once_with(JOB_ID, "cp-1", model="M", version="V3")
+    instance.create_job_from_body.assert_not_called()
+    body = instance._session.post.call_args.kwargs["json"]
+    assert instance._session.post.call_args.args[0].endswith("/deployments")
+    assert body["deployment"] == {"class": "PRODUCTION", "min_replicas": 2, "gpu_type": "H200", "name": "SUPPORT_BOT"}
+    assert body["source"]["registry_model"] == {"name": "DB.SCH.JOB_X", "version": "CP_1"}
+    assert out["deployment_class"] == "PRODUCTION"
+
+
+def test_evaluation_checkpoint_still_deploys_straight_from_the_checkpoint():
+    instance = client()
+    instance.register_checkpoint_for_deployment = MagicMock()
+    instance.get_job = MagicMock(
+        return_value={"sub_jobs": [{"job_type": "JOB_TYPE_TRAINING", "model_name": "Qwen/Qwen3-1.7B"}]}
     )
-    assert code != 0
-    assert "create" not in [c[0] for c in fake.calls]
-    assert "517614" in err
+    instance.create_job_from_body = MagicMock(return_value={"job_id": DEPLOYMENT_JOB_ID})
+    spec = production_checkpoint_spec()
+    spec["deployment"]["class"] = "EVALUATION"
+
+    instance.create_model_deployment(spec)
+
+    instance.register_checkpoint_for_deployment.assert_not_called()
+    sub_job = instance.create_job_from_body.call_args.args[0]["sub_job_configs"][0]
+    assert sub_job["source_checkpoint_info"] == {"source_job_id": JOB_ID, "checkpoint_id": "cp-1"}
+
+
+def test_production_spec_rules():
+    with pytest.raises(ValueError, match="needs a 'checkpoint' or 'registry_model' source"):
+        ModelDeploymentSpec.from_dict({**production_checkpoint_spec(), "source": {"type": "base_model", "model": "Q"}})
+    with pytest.raises(ValueError, match="must be 1"):
+        ModelDeploymentSpec.from_dict(production_checkpoint_spec(gpus_per_replica=2))
+    evaluation = production_checkpoint_spec(name="X")
+    evaluation["deployment"]["class"] = "EVALUATION"
+    with pytest.raises(ValueError, match="name is only for PRODUCTION"):
+        ModelDeploymentSpec.from_dict(evaluation)
+    assert ModelDeploymentSpec.from_dict(production_checkpoint_spec(name="SUPPORT_BOT")).to_public_spec()[
+        "deployment"
+    ]["name"] == "SUPPORT_BOT"
+
+
+def test_register_for_deployment_waits_then_finds_the_version():
+    instance = client()
+    instance.register_checkpoint = MagicMock(return_value={"operation": OPERATION, "status": "RUNNING"})
+    instance.wait_for_registration = MagicMock(return_value={"operation": OPERATION, "status": "SUCCEEDED"})
+    instance.find_registered_version = MagicMock(return_value="CP_1")
+
+    assert instance.register_checkpoint_for_deployment(JOB_ID, "cp-1") == (
+        f"DB.SCH.{registry.default_model_name(JOB_ID)}",
+        "CP_1",
+    )
+
+
+def test_register_for_deployment_stops_on_a_failed_registration():
+    instance = client()
+    instance.register_checkpoint = MagicMock(return_value={"operation": OPERATION, "status": "RUNNING"})
+    instance.wait_for_registration = MagicMock(
+        return_value={"operation": OPERATION, "status": "FAILED", "error": "517614: copied 5 of 6"}
+    )
+    with pytest.raises(RuntimeError, match="failed: 517614"):
+        instance.register_checkpoint_for_deployment(JOB_ID, "cp-1")
+
+
+def test_dropping_a_production_deployment_uses_the_deployments_route():
+    instance = client()
+    job = {
+        "job_id": DEPLOYMENT_JOB_ID,
+        "status": "JOB_STATE_RUNNING",
+        "sub_jobs": [
+            {
+                "job_type": "sampling",
+                "model_name": "Qwen/Qwen3-0.6B",
+                "inference_config": {"deployment_class": "PRODUCTION", "num_replicas": 1.0, "n_gpus": 1.0, "max_seq_len": 2048.0},
+            }
+        ],
+    }
+    instance.get_job = MagicMock(return_value=job)
+    instance.cancel_job = MagicMock()
+    instance._session = MagicMock()
+    instance._session.delete.return_value = http_response(200, {"message": "deleted"})
+
+    assert instance.drop_model_deployment(f"sf-ct-{DEPLOYMENT_JOB_ID}")["dropped"] is True
+    instance.cancel_job.assert_not_called()
+    assert instance._session.delete.call_args.args[0].endswith(f"/deployments/sf-ct-{DEPLOYMENT_JOB_ID}")
 
 
 def test_an_external_stage_deployment_can_be_listed():

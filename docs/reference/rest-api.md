@@ -3850,7 +3850,8 @@ Client-side checks (all others are left to the server):
 | Field | Rule |
 |---|---|
 | every object | no unknown keys; an error names both unknown and missing keys, so a typo such as `min_replica` is reported as such |
-| `deployment.class` | exactly `"EVALUATION"`; only `EVALUATION` is supported today |
+| `deployment.class` | `"EVALUATION"` or `"PRODUCTION"`; `PRODUCTION` needs a `checkpoint` or `registry_model` source and `gpus_per_replica` 1 |
+| `deployment.name` | optional, `PRODUCTION` only; a non-empty string |
 | `source.type` | `base_model`, `checkpoint`, or `registry_model`; every source field a non-empty string |
 | `registry_model` source | `model` and `version` required; `gpus_per_replica` must be `1` |
 | counts | positive integers (`true`/`false` and fractions rejected) |
@@ -3879,6 +3880,13 @@ It is sent to `POST /deployments` instead, as
 version's base model and folders, and chooses the GPUs per replica. Read back, such a
 deployment shows `{"type": "registry_model", "model": <base model>}`: the job keeps the
 version's folders, not its name.
+
+A `PRODUCTION` deployment always goes to `POST /deployments` with a
+`registry_model` source. With a `checkpoint` source the client first calls
+`:register` ([section 16](#16-registered-model-versions)), waits for it, and
+finds the new version by its `source_job` / `source_checkpoint` metadata; the
+server does not register implicitly. `drop` ends a `PRODUCTION` deployment
+with `DELETE /deployments/sf-ct-<UUID>`, since job cancel refuses it.
 
 ### 14.3 Statuses
 

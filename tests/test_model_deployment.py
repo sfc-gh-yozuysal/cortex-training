@@ -214,7 +214,11 @@ def test_checkpoint_spec_translates_only_public_checkpoint_identity():
         (lambda value: value.update(extra=True), "unsupported field"),
         (
             lambda value: value["deployment"].update({"class": "PRODUCTION"}),
-            'deployment.class must be "EVALUATION"; only EVALUATION is supported today',
+            "a PRODUCTION deployment needs a 'checkpoint' or 'registry_model' source",
+        ),
+        (
+            lambda value: value["deployment"].update({"class": "STAGING"}),
+            'deployment.class must be "EVALUATION" or "PRODUCTION"',
         ),
         (
             lambda value: value["source"].update(stage_credentials={"token": "x"}),

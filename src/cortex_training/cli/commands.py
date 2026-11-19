@@ -370,8 +370,14 @@ For a checkpoint, use:
   "source": {"type": "checkpoint", "job_id": "TRAINING_JOB_UUID",
              "checkpoint_id": "CHECKPOINT_ID"}
 
-Only EVALUATION is supported today. gpu_type is H200, B200, or B300; gpus_per_replica is 1, 2, 4, or 8; and
-min_replicas * gpus_per_replica must be at most 8 or a multiple of 8. Use
+For a registered Model Registry version, use:
+  "source": {"type": "registry_model", "model": "DB.SCHEMA.MODEL", "version": "V1"}
+
+class is EVALUATION or PRODUCTION. A PRODUCTION deployment needs a checkpoint or
+registry_model source, may set "name", and uses gpus_per_replica 1; a
+checkpoint source is registered first (JOB_<job>/CP_<checkpoint>, or --model /
+--version). gpu_type is H200, B200, or B300; gpus_per_replica is 1, 2, 4, or 8;
+and min_replicas * gpus_per_replica must be at most 8 or a multiple of 8. Use
 --dry-run to check a spec without creating anything.
 """
 
@@ -919,7 +925,7 @@ def build_parser(
 
     deployment_create = deployment_commands.add_parser(
         "create",
-        help="Create an evaluation deployment from a base model or checkpoint.",
+        help="Create a deployment from a base model, checkpoint, or registered version.",
         description=(
             "Create an evaluation deployment. Checkpoint sources must name a "
             "completed Cortex Training weights-only checkpoint."
@@ -956,10 +962,22 @@ def build_parser(
         "--register",
         action="store_true",
         help=(
-            "For a checkpoint source: first register the checkpoint as a model "
-            "version (named JOB_<job>/CP_<checkpoint>), wait for it, then deploy "
-            "that registered version."
+            "For an EVALUATION deployment with a checkpoint source: first register "
+            "the checkpoint as a model version, wait for it, then deploy that "
+            "version. A PRODUCTION deployment with a checkpoint source always does."
         ),
+    )
+    deployment_create.add_argument(
+        "--model",
+        help=(
+            "Model the checkpoint is registered into, [[database.]schema.]name "
+            "(default JOB_<job>). Only when the checkpoint is registered."
+        ),
+    )
+    deployment_create.add_argument(
+        "--version",
+        dest="model_version",
+        help="Version name for the registered checkpoint (default CP_<checkpoint>).",
     )
     _add_model_deployment_timeout_arg(deployment_create)
 
@@ -2507,9 +2525,16 @@ def _cmd_model_deployment_create(
         spec = ModelDeploymentSpec.from_dict(raw_spec)
         _print_json(spec.to_public_spec(), stdout, compact=args.compact)
         return 0
-    if getattr(args, "register", False):
-        raw_spec = _register_then_registry_source(client, raw_spec)
-    output = client.create_model_deployment(raw_spec)
+    registration = {
+        key: value
+        for key, value in (
+            ("register", args.register),
+            ("model", args.model),
+            ("version", args.model_version),
+        )
+        if value
+    }
+    output = client.create_model_deployment(raw_spec, **registration)
     if args.wait:
         deployment_id = output[OUT_DEPLOYMENT]
         try:
@@ -2676,36 +2701,6 @@ def _cmd_model(args: argparse.Namespace, client, stdout: TextIO) -> int:
         _print_json(result, stdout, compact=args.compact)
         return 0 if result.get("dropped") else 1
     raise ValueError(f"unknown model command: {command}")
-
-
-def _register_then_registry_source(client, raw_spec: dict[str, Any]) -> dict[str, Any]:
-    """For ``model-deployment create --register``: register the checkpoint, then point the spec at it.
-
-    The checkpoint is registered under the default names (``JOB_<job>`` /
-    ``CP_<checkpoint>``), or reused if this checkpoint already made that
-    version. Returns the spec with a ``registry_model`` source.
-    """
-    from cortex_training.model_registry import default_model_name
-
-    source = raw_spec.get("source") if isinstance(raw_spec, dict) else None
-    if not isinstance(source, dict) or source.get("type") != "checkpoint":
-        raise ValueError("--register needs a spec whose source.type is 'checkpoint'")
-    job_id, checkpoint_id = source.get("job_id"), source.get("checkpoint_id")
-    result = client.register_checkpoint(job_id, checkpoint_id)
-    if result.get("operation"):
-        result = client.wait_for_registration(result["operation"])
-        if result.get("status") != "SUCCEEDED":
-            raise RuntimeError(
-                f"registering checkpoint {checkpoint_id} {result.get('status', '').lower()}: "
-                f"{result.get('error', '')}".rstrip(": ")
-            )
-    model = default_model_name(job_id)
-    version = client.find_registered_version(model, job_id, checkpoint_id)
-    if version is None:
-        raise RuntimeError(
-            f"checkpoint {checkpoint_id} was registered, but its version of {model} was not found"
-        )
-    return {**raw_spec, "source": {"type": "registry_model", "model": model, "version": version}}
 
 
 def _is_unsupported_hardware(exc: BaseException) -> bool:

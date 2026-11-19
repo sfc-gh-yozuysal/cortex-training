@@ -138,6 +138,8 @@ from cortex_training.model_deployment import JOB_FIELD_SUBMITTED_BY
 from cortex_training.model_deployment import JOB_REASON_CANCELLED_BY_CLIENT
 from cortex_training.model_deployment import JOB_STATUS_TO_DEPLOYMENT_STATUS
 from cortex_training.model_deployment import MODEL_DEPLOYMENT_CLASS
+from cortex_training.model_deployment import MODEL_DEPLOYMENT_CLASSES
+from cortex_training.model_deployment import PRODUCTION_DEPLOYMENT_CLASS
 from cortex_training.model_deployment import MODEL_DEPLOYMENT_ID_PREFIX
 from cortex_training.model_deployment import ModelDeploymentSpec
 from cortex_training.model_deployment import OUT_BASE_URL
@@ -1712,7 +1714,7 @@ def create_job_body_from_job(job: Mapping[str, Any], *, experiment_name: str | N
 
 
 def _model_deployment_sub_job(job: Any) -> dict[str, Any] | None:
-    """Return a job's sub-job if the job is an ``EVALUATION`` deployment, else ``None``."""
+    """Return a job's sub-job if the job is an ``EVALUATION`` or ``PRODUCTION`` deployment, else ``None``."""
     if not isinstance(job, dict):
         return None
     sub_jobs = job.get("sub_jobs")
@@ -1726,7 +1728,7 @@ def _model_deployment_sub_job(job: Any) -> dict[str, Any] | None:
     inference_config = sub_job.get(WIRE_INFERENCE_CONFIG)
     if not isinstance(inference_config, dict):
         return None
-    if inference_config.get(WIRE_DEPLOYMENT_CLASS) != MODEL_DEPLOYMENT_CLASS:
+    if inference_config.get(WIRE_DEPLOYMENT_CLASS) not in MODEL_DEPLOYMENT_CLASSES:
         return None
     return sub_job
 
@@ -3696,10 +3698,20 @@ class CortexTrainingClient:
         return job
 
     def create_model_deployment(
-        self, spec: ModelDeploymentSpec | Mapping[str, Any]
+        self,
+        spec: ModelDeploymentSpec | Mapping[str, Any],
+        *,
+        register: bool = False,
+        model: str | None = None,
+        version: str | None = None,
     ) -> dict[str, Any]:
-        """Create an evaluation deployment and return only its public metadata.
+        """Create a deployment and return only its public metadata.
 
+        A ``PRODUCTION`` deployment with a checkpoint source first registers the
+        checkpoint as a model version, waits for it, and deploys that version.
+        ``register=True`` does the same for an ``EVALUATION`` deployment, which
+        otherwise serves the checkpoint directly. The version is
+        ``JOB_<job>/CP_<checkpoint>`` unless ``model`` / ``version`` name it.
         See ``docs/reference/rest-api.md`` section 14.
         """
         raw_spec = (
@@ -3710,6 +3722,22 @@ class CortexTrainingClient:
         spec = ModelDeploymentSpec.from_dict(
             dict(raw_spec) if isinstance(raw_spec, Mapping) else raw_spec
         )
+        if spec.source_type == SOURCE_TYPE_CHECKPOINT and (
+            register or spec.deployment_class == PRODUCTION_DEPLOYMENT_CLASS
+        ):
+            registered_model, registered_version = self.register_checkpoint_for_deployment(
+                spec.source_job_id, spec.checkpoint_id, model=model, version=version
+            )
+            spec = replace(
+                spec,
+                source_type=SOURCE_TYPE_REGISTRY_MODEL,
+                registry_model=registered_model,
+                registry_version=registered_version,
+                source_job_id=None,
+                checkpoint_id=None,
+            )
+        elif register:
+            raise ValueError("register needs a spec whose source.type is 'checkpoint'")
         try:
             if spec.source_type == SOURCE_TYPE_REGISTRY_MODEL:
                 # Only the deployments route can serve a registered version. It
@@ -4034,6 +4062,37 @@ class CortexTrainingClient:
                 return version.get("name")
         return None
 
+    def register_checkpoint_for_deployment(
+        self,
+        job_id: str,
+        checkpoint_id: str,
+        *,
+        model: str | None = None,
+        version: str | None = None,
+    ) -> tuple[str, str]:
+        """Register a checkpoint (or reuse its version) and return ``(model, version)``.
+
+        Waits for the registration. ``model`` defaults to ``JOB_<job>``. Raises
+        ``RuntimeError`` if the registration fails or is cancelled.
+        """
+        result = self.register_checkpoint(job_id, checkpoint_id, model=model, version=version)
+        if result.get(_registry.OUT_OPERATION):
+            result = self.wait_for_registration(result[_registry.OUT_OPERATION])
+            if result[_registry.OUT_STATUS] != _registry.OPERATION_SUCCEEDED:
+                message = f"registering checkpoint {checkpoint_id} {result[_registry.OUT_STATUS].lower()}"
+                if result.get(_registry.OUT_ERROR):
+                    message += f": {result[_registry.OUT_ERROR]}"
+                raise RuntimeError(message)
+        target = _registry.qualify_model_name(
+            model or _registry.default_model_name(job_id), self.database, self.schema
+        )
+        found = self.find_registered_version(target, job_id, checkpoint_id)
+        if found is None:
+            raise RuntimeError(
+                f"checkpoint {checkpoint_id} was registered, but its version of {target} was not found"
+            )
+        return target, found
+
     @staticmethod
     def _normalize_job_status(status) -> str:
         """Normalize full enum names (``JOB_STATE_RUNNING``) to short form (``running``).
@@ -4227,7 +4286,15 @@ class CortexTrainingClient:
         if status in {DEPLOYMENT_STATUS_FAILED, DEPLOYMENT_STATUS_TERMINATED}:
             return {OUT_DEPLOYMENT: deployment_id, OUT_DROPPED: False, OUT_STATUS: status}
         if status not in {DEPLOYMENT_STATUS_DROPPING, DEPLOYMENT_STATUS_DROPPED}:
-            self.cancel_job(job_id)
+            sub_job = _model_deployment_sub_job(job) or {}
+            if (sub_job.get(WIRE_INFERENCE_CONFIG) or {}).get(
+                WIRE_DEPLOYMENT_CLASS
+            ) == PRODUCTION_DEPLOYMENT_CLASS:
+                # Job cancel refuses a PRODUCTION deployment; only the
+                # deployments route ends it and frees its name.
+                self._send("DELETE", f"{self._prefix}/deployments/{deployment_id}")
+            else:
+                self.cancel_job(job_id)
         return {OUT_DEPLOYMENT: deployment_id, OUT_DROPPED: True}
 
     def iter_jobs(
