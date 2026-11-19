@@ -1235,10 +1235,13 @@ and `comment`. `--job` and `--kind` filter the rows.
 
 `drop MODEL` drops a model and `drop MODEL/VERSION` one version. If a named
 model deployment still serves it, nothing is dropped and `drop` exits `1`,
-listing those deployments: running replicas keep serving their local copy,
-but a restart or scale-out fails. `--force` drops anyway. EVALUATION
+listing those deployments: Snowflake refuses to drop a model or version that a
+named deployment uses, so drop the deployment first. `--force` skips this
+check and sends the drop anyway (Snowflake still refuses it). EVALUATION
 deployments keep no record of the version they serve, so they are not
-checked.
+checked: their running replicas keep serving, but a restart or scale-out
+fails. Snowflake also refuses to drop a model's only version or its default
+version; drop the whole model, or set another default, instead.
 
 `model-deployment create` also takes a registered version as its source,
 `{"type": "registry_model", "model": "[[database.]schema.]name", "version": "V1"}`
@@ -1268,7 +1271,9 @@ cortex-training model-deployment create --spec production-checkpoint.json --wait
 ```
 
 `model-deployment drop` ends a `PRODUCTION` deployment through the
-deployments route, which also frees its name; job cancel refuses it.
+deployments route, which also frees its name; job cancel refuses it. A
+`PRODUCTION` deployment that has already failed or ended keeps its record, and
+the record keeps its model from being dropped, so `drop` removes it too.
 
 ### Job TUI
 

@@ -3886,7 +3886,10 @@ A `PRODUCTION` deployment always goes to `POST /deployments` with a
 `:register` ([section 16](#16-registered-model-versions)), waits for it, and
 finds the new version by its `source_job` / `source_checkpoint` metadata; the
 server does not register implicitly. `drop` ends a `PRODUCTION` deployment
-with `DELETE /deployments/sf-ct-<UUID>`, since job cancel refuses it.
+with `DELETE /deployments/sf-ct-<UUID>`, since job cancel refuses it. It sends
+the DELETE whatever the status: a failed or ended `PRODUCTION` deployment keeps
+its MODEL DEPLOYMENT record until then, and the server refuses to drop a model
+a record names.
 
 ### 14.3 Statuses
 
@@ -4131,3 +4134,8 @@ CORTEX_TRAINING`) and `SHOW VERSIONS`, whose `metadata` holds `source_job`,
 `drop_registered_model` first reads `SHOW MODEL DEPLOYMENTS IN SCHEMA` and
 drops nothing while a named deployment still serves the model or version,
 unless `force`; it then runs `DROP MODEL` or `ALTER MODEL ... DROP VERSION`.
+The server itself refuses both while a named deployment uses the model
+(`402156`, "Model is being used by MODEL DEPLOYMENT"), and refuses dropping a
+model's only version (`092958`) or its default version (`092922`).
+A cancelled registration's statement ends with error `000604`, which the
+client reports as `CANCELLED`.

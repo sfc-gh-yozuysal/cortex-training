@@ -76,8 +76,13 @@ METADATA_REGISTRATION_QUERY_ID = "registration_query_id"
 # The version's spec file, relative to the version's folder.
 MODEL_SPEC_PATH = "model/model.yaml"
 
-# Statuses of ``SHOW MODEL DEPLOYMENTS`` rows that no longer serve.
-ENDED_MODEL_DEPLOYMENT_STATUSES = frozenset({"DROPPED", "FAILED", "TERMINATED", "DELETED"})
+# The error a cancelled statement ends with.
+CANCELLED_ERROR_CODE = "000604"
+
+# Statuses of ``SHOW MODEL DEPLOYMENTS`` rows whose record no longer blocks a drop.
+# A FAILED or TERMINATED deployment keeps its record (and blocks the model's drop)
+# until it is dropped.
+ENDED_MODEL_DEPLOYMENT_STATUSES = frozenset({"DROPPED", "DELETED"})
 
 # Connector QueryStatus names, grouped by the operation state they mean.
 _SUCCEEDED_QUERY_STATUSES = frozenset({"SUCCESS"})

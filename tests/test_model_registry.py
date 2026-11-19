@@ -327,7 +327,7 @@ def test_drop_is_held_back_while_a_named_deployment_serves_the_version():
 
     assert result["dropped"] is False
     assert result["deployments"][0]["name"] == "SUPPORT_BOT"
-    assert "--force" in result["warning"]
+    assert "drop those deployments first" in result["warning"]
     assert not any(s.startswith(("DROP", "ALTER")) for s in statements)
 
 
@@ -343,7 +343,6 @@ def test_drop_with_force_drops_and_still_warns():
     result = instance.drop_registered_model("M", "V1", force=True)
 
     assert result["dropped"] is True
-    assert "restart or scale-out" in result["warning"]
     assert statements[-1] == "ALTER MODEL M DROP VERSION V1"
 
 
@@ -352,7 +351,7 @@ def test_drop_ignores_ended_and_other_deployments():
     instance._session, statements = sql_router(
         {
             "SHOW MODEL DEPLOYMENTS": deployments_result(
-                [["OLD", "DROPPED", "M", "V1"], ["OTHER", "RUNNING", "M", "V2"], ["X", "RUNNING", "N", "V1"]]
+                [["OLD", "DROPPED", "M", "V1"], ["OTHER", "FAILED", "M", "V2"], ["X", "RUNNING", "N", "V1"]]
             ),
             "DROP MODEL": sql_result(["status"], [["ok"]]),
             "ALTER MODEL": sql_result(["status"], [["ok"]]),
@@ -362,7 +361,7 @@ def test_drop_ignores_ended_and_other_deployments():
     first = instance.drop_registered_model("M", "V1", force=False)
     assert first["deployments"] == [] and first["dropped"] is True
     result = instance.drop_registered_model("DB.SCH.M")
-    assert result["dropped"] is False  # OTHER still serves M/V2
+    assert result["dropped"] is False  # OTHER failed, but its record still names M
     assert statements[-1].startswith("SHOW MODEL DEPLOYMENTS")
 
 
@@ -718,3 +717,70 @@ def test_an_external_stage_deployment_can_be_listed():
 )
 def test_deployment_model_names_are_sent_fully_qualified(name, qualified):
     assert registry.qualify_model_name(name, "DB", "SCH") == qualified
+
+
+def test_a_cancelled_statement_is_reported_as_cancelled():
+    """A cancelled statement ends as FAILED_WITH_ERROR with error 000604."""
+    instance = client()
+    instance._open_experiment_artifact_connection = lambda: FakeConnection(
+        ["FAILED_WITH_ERROR"], error="000604: SQL execution canceled"
+    )
+    assert instance.wait_for_registration(OPERATION)["status"] == "CANCELLED"
+
+
+def test_list_quotes_a_mixed_case_model_in_the_spec_path():
+    instance = client()
+    instance._session, _ = sql_router(
+        {
+            "SHOW MODELS": sql_result(["name", "model_type"], [["My_Model", "CORTEX_TRAINING"]]),
+            'SHOW VERSIONS IN MODEL "My_Model"': versions_result([["v1", "x", None, metadata()]]),
+        }
+    )
+    connection = SpecConnection({"v1": FULL_SPEC_YAML})
+    instance._open_experiment_artifact_connection = lambda: connection
+
+    rows = instance.list_registered_versions()
+
+    assert rows[0]["kind"] == "FULL"
+    assert 'DB.SCH."My_Model"/versions/v1/' in connection.gets[0]
+
+
+def test_list_keeps_going_when_one_spec_cannot_be_read():
+    instance = client()
+    instance._session, _ = sql_router(
+        {
+            "SHOW MODELS": sql_result(["name", "model_type"], [["M", "CORTEX_TRAINING"]]),
+            "SHOW VERSIONS IN MODEL M": versions_result([["V1", "x", None, metadata()], ["V2", "x", None, metadata()]]),
+        }
+    )
+    connection = SpecConnection({"V2": FULL_SPEC_YAML})  # V1 has no spec: GET raises KeyError
+    instance._open_experiment_artifact_connection = lambda: connection
+
+    rows = instance.list_registered_versions()
+
+    assert [(r["version"], r["kind"]) for r in rows] == [("V1", None), ("V2", "FULL")]
+
+
+@pytest.mark.parametrize("status", ["JOB_STATE_FAILED", "JOB_STATE_TERMINATED", "JOB_STATE_CANCELLED"])
+def test_dropping_an_ended_production_deployment_still_deletes_its_record(status):
+    instance = client()
+    instance.get_job = MagicMock(
+        return_value={
+            "job_id": DEPLOYMENT_JOB_ID,
+            "status": status,
+            "sub_jobs": [
+                {
+                    "job_type": "sampling",
+                    "model_name": "Qwen/Qwen3-0.6B",
+                    "inference_config": {"deployment_class": "PRODUCTION", "num_replicas": 1.0, "n_gpus": 1.0, "max_seq_len": 2048.0},
+                }
+            ],
+        }
+    )
+    instance.cancel_job = MagicMock()
+    instance._session = MagicMock()
+    instance._session.delete.return_value = http_response(200, {"message": "Deployment has already been deleted"})
+
+    assert instance.drop_model_deployment(f"sf-ct-{DEPLOYMENT_JOB_ID}")["dropped"] is True
+    instance._session.delete.assert_called_once()
+    instance.cancel_job.assert_not_called()

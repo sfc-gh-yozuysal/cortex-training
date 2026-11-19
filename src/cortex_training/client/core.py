@@ -3848,6 +3848,9 @@ class CortexTrainingClient:
                 connection.get_query_status_throw_if_error(operation)
             except Exception as exc:  # noqa: BLE001 - the error is the result
                 result[_registry.OUT_ERROR] = _redact_secrets(str(exc)).strip()
+            # A cancelled statement ends as FAILED_WITH_ERROR with error 000604.
+            if _registry.CANCELLED_ERROR_CODE in result.get(_registry.OUT_ERROR, ""):
+                result[_registry.OUT_STATUS] = _registry.OPERATION_CANCELLED
         return result
 
     @_track_operation("get_registration")
@@ -3918,8 +3921,10 @@ class CortexTrainingClient:
 
     def _model_version_spec(self, connection: Any, model: str, version: str) -> dict[str, Any]:
         """Read ``kind`` and ``base_model`` from one version's ``model/model.yaml``."""
+        # In a snow:// path the model is an identifier (quoted when it is not plain
+        # upper case); the version is written as stored, without quotes.
         uri = (
-            f"snow://model/{self.database}.{self.schema}.{model}/versions/{version}/"
+            f"snow://model/{self.database}.{self.schema}.{_sql_identifier(model)}/versions/{version}/"
             f"{_registry.MODEL_SPEC_PATH}"
         )
         with tempfile.TemporaryDirectory(prefix="cortex-training-model-") as folder:
@@ -3962,7 +3967,11 @@ class CortexTrainingClient:
                         continue
                     if connection is None:
                         connection = self._open_experiment_artifact_connection()
-                    spec = self._model_version_spec(connection, name, version.get("name"))
+                    try:
+                        spec = self._model_version_spec(connection, name, version.get("name"))
+                    except Exception:  # noqa: BLE001 - one unreadable spec must not hide the rest
+                        logger.warning("could not read the spec of %s/%s", name, version.get("name"))
+                        spec = {_registry.OUT_KIND: None, _registry.OUT_BASE_MODEL: None}
                     if wanted_kind is not None and spec[_registry.OUT_KIND] != wanted_kind:
                         continue
                     found.append(
@@ -3985,11 +3994,12 @@ class CortexTrainingClient:
         return found
 
     def _model_deployments_using(self, model: str, version: str | None) -> list[dict[str, Any]]:
-        """Named model deployments (``SHOW MODEL DEPLOYMENTS``) still serving ``model``.
+        """Named model deployments (``SHOW MODEL DEPLOYMENTS``) whose record names ``model``.
 
-        Only deployments with a MODEL DEPLOYMENT record are found: an EVALUATION
-        deployment of a registered version keeps no record of which version it
-        serves.
+        A failed or ended deployment is included until it is dropped: its record
+        stays, and the server refuses to drop a model a record names. Only
+        deployments with a record are found: an EVALUATION deployment of a
+        registered version keeps no record of which version it serves.
         """
         wanted_model = _registry.last_identifier(model)
         wanted_version = _registry.unquote_identifier(version) if version else None
@@ -4034,8 +4044,9 @@ class CortexTrainingClient:
         if deployments and not force:
             result[_registry.OUT_DROPPED] = False
             result[_registry.OUT_WARNING] = (
-                "model deployments still serve this model; they keep serving their local copy, "
-                "but a restart or scale-out fails. Drop them first, or pass --force."
+                "model deployments still serve this model. Snowflake refuses to drop a model or "
+                "version that a named model deployment uses: drop those deployments first "
+                "(cortex-training model-deployment drop)."
             )
             return result
         if version is None:
@@ -4043,11 +4054,6 @@ class CortexTrainingClient:
         else:
             self._sql_rows(f"ALTER MODEL {model} DROP VERSION {version}")
         result[_registry.OUT_DROPPED] = True
-        if deployments:
-            result[_registry.OUT_WARNING] = (
-                "dropped while model deployments still serve it; a restart or scale-out of "
-                "those deployments fails"
-            )
         return result
 
     def find_registered_version(self, model: str, job_id: str, checkpoint_id: str) -> str | None:
@@ -4283,18 +4289,20 @@ class CortexTrainingClient:
                 return {OUT_DEPLOYMENT: deployment_id, OUT_DROPPED: True}
             raise
         status = _model_deployment_status(job)
+        sub_job = _model_deployment_sub_job(job) or {}
+        if (sub_job.get(WIRE_INFERENCE_CONFIG) or {}).get(
+            WIRE_DEPLOYMENT_CLASS
+        ) == PRODUCTION_DEPLOYMENT_CLASS:
+            # Job cancel refuses a PRODUCTION deployment; only the deployments
+            # route ends it. It also removes its MODEL DEPLOYMENT record, which
+            # outlives a failed or ended deployment and keeps its model from
+            # being dropped, so it is sent whatever the status. A repeat is a 200.
+            self._send("DELETE", f"{self._prefix}/deployments/{deployment_id}")
+            return {OUT_DEPLOYMENT: deployment_id, OUT_DROPPED: True}
         if status in {DEPLOYMENT_STATUS_FAILED, DEPLOYMENT_STATUS_TERMINATED}:
             return {OUT_DEPLOYMENT: deployment_id, OUT_DROPPED: False, OUT_STATUS: status}
         if status not in {DEPLOYMENT_STATUS_DROPPING, DEPLOYMENT_STATUS_DROPPED}:
-            sub_job = _model_deployment_sub_job(job) or {}
-            if (sub_job.get(WIRE_INFERENCE_CONFIG) or {}).get(
-                WIRE_DEPLOYMENT_CLASS
-            ) == PRODUCTION_DEPLOYMENT_CLASS:
-                # Job cancel refuses a PRODUCTION deployment; only the
-                # deployments route ends it and frees its name.
-                self._send("DELETE", f"{self._prefix}/deployments/{deployment_id}")
-            else:
-                self.cancel_job(job_id)
+            self.cancel_job(job_id)
         return {OUT_DEPLOYMENT: deployment_id, OUT_DROPPED: True}
 
     def iter_jobs(

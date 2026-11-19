@@ -497,10 +497,11 @@ def _add_model_parsers(subparsers) -> None:
         help="Drop a registered model, or one version with MODEL/VERSION.",
         description=(
             "Drop a registered model, or one of its versions (MODEL/VERSION). "
-            "If named model deployments still serve it, nothing is dropped "
-            "unless --force: running replicas keep serving their local copy, "
-            "but a restart or scale-out fails. EVALUATION deployments keep no "
-            "record of the version they serve, so they are not checked."
+            "If named model deployments still serve it, nothing is dropped and "
+            "they are listed: Snowflake refuses the drop until they are dropped. "
+            "EVALUATION deployments keep no record of the version they serve, "
+            "so they are not checked; their running replicas keep serving, but "
+            "a restart or scale-out fails."
         ),
     )
     _add_model_common_args(drop)
@@ -508,7 +509,7 @@ def _add_model_parsers(subparsers) -> None:
     drop.add_argument(
         "--force",
         action="store_true",
-        help="Drop even if model deployments still serve it.",
+        help="Skip the deployment check and send the drop (Snowflake still refuses it while a named deployment uses the model).",
     )
 
 
