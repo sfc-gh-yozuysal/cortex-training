@@ -32,6 +32,8 @@ EXAMPLE_FOLDERS = (
     "dflash2",
     "skyrl/gsm8k_grpo",
     "trl/gsm8k_grpo",
+    "tabular_quickstart/kumo_finetune",
+    "tabular_quickstart/tabpfn_finetune",
 )
 
 

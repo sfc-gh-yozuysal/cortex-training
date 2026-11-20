@@ -1,0 +1,30 @@
+{
+  "sub_job_configs": [
+    {
+      "job_type": "training",
+      "model_name": "nvidia/Kumo-Tabular",
+      "seed": 0,
+      "training_config": {
+        "max_seq_len": 1,
+        "model_provider": "tabular",
+        "n_gpus": 1,
+        "optimizer": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "lr": 1e-05,
+          "name": "AdamW",
+          "weight_decay": 0.0
+        },
+        "tabular": {
+          "adapter": "kumo_tabular",
+          "size": "small",
+          "task": "classification"
+        },
+        "train_batch_size": 1
+      }
+    }
+  ]
+}

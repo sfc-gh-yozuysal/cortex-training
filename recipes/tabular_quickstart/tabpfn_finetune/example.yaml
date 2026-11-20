@@ -1,0 +1,14 @@
+id: tabpfn-finetune
+title: Fine-tuning the TabPFN v2 tabular foundation model
+status: experimental
+task: tabular
+methods:
+  - full-parameter
+datasets:
+  - sklearn/digits
+precision:
+  - float32
+provenance:
+  project: PriorLabs/TabPFN
+  recipe: tabpfn.finetuning (FinetunedTabPFNClassifier)
+last_validated: null

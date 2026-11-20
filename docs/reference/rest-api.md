@@ -2129,6 +2129,9 @@ count, and top-k; see
 speculative-decoding draft against a frozen target. Its options and rules are in
 [section 8.6](#86-dflash2-draft-training-and-serving).
 
+`extra_training["model_provider"] = "tabular"` trains a tabular foundation
+model; see [section 8.7](#87-tabular-foundation-models).
+
 For LoRA training, set `extra_training["peft_config"]` to a PEFT
 `LoraConfig`-compatible object. It is validated and rewritten client-side, so it
 must specify `peft_type="Lora"` — exactly that spelling, not the `"LORA"` a
@@ -2738,6 +2741,54 @@ The flag is rejected unless all of these hold:
 - `speculative_config.model` is not set. A job names its draft either by `model`
   or by this flag, not both.
 
+### 8.7 Tabular foundation models
+
+`extra_training["model_provider"] = "tabular"` trains a tabular foundation
+model: a network that predicts the targets of query rows from labeled context
+rows of the same table in one forward pass. Only the network runs on the
+server; the model library's preprocessing runs in the client, and requests
+carry tensors ([section 10.6](#106-tabular-models)).
+
+`extra_training["tabular"]` is required when the provider is `tabular` and is
+rejected for every other provider. Unknown keys are rejected.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `adapter` | required | `tabpfn_v2` (TabPFN v2 classifier, 10 class logits) or `kumo_tabular` (NVIDIA Kumo Tabular: 10 class logits, or 999 quantiles at levels 0.001 to 0.999) |
+| `task` | `classification` | `classification` or `regression` (`kumo_tabular` only) |
+| `size` | `small` | `kumo_tabular` checkpoint: `small` (about 28M parameters), `medium` (62M) or `large` (215M) |
+| `weights_dir` | none | A directory on the GPU node in the model's own layout to load instead of the model directory |
+
+A tabular job runs on one GPU with its own trainer (AdamW only; `gradient_clipping`
+`0` turns clipping off). It is rejected when any of these hold:
+
+- `n_gpus` is not 1, or `sp_size` or `ep_size` is greater than one.
+- `ds_config`, `peft_config`, `use_liger`, `text_config_overrides`, or
+  `model_options` is set.
+
+```json
+{
+  "sub_job_configs": [{
+    "job_type": "training",
+    "model_name": "nvidia/Kumo-Tabular",
+    "training_config": {
+      "model_provider": "tabular",
+      "tabular": {"adapter": "kumo_tabular", "task": "classification", "size": "small"},
+      "n_gpus": 1,
+      "max_seq_len": 1,
+      "train_batch_size": 1,
+      "optimizer": {"name": "AdamW", "lr": 1e-05}
+    }
+  }]
+}
+```
+
+`max_seq_len` is required by the schema but unused. A checkpoint holds
+`model.safetensors` (the network's state dict) and `config.json` with
+`model_type`, `task`, `adapter`, `base_model`, and the model library's name and
+version; a resumable checkpoint adds `optimizer.pt`. Loading a checkpoint into a
+tabular job is not supported yet.
+
 ---
 
 ## 9. DSSST1 binary wire protocol
@@ -3185,6 +3236,53 @@ without this loss fails the request with an error containing
 The result's `metrics["weighted_cross_entropy_objective_sum"]` is
 `L_surrogate`, not `L`; read it rather than `avg_loss`, whose scale depends on
 how the server combines its ranks' losses.
+
+### 10.6 Tabular models
+
+A job with `model_provider` `tabular` ([section 8.7](#87-tabular-foundation-models))
+takes one entry per network call in `microbatches`. A call is indivisible: its
+context and query rows stay in one forward pass. `cortex_training.client.tabular`
+builds these frames:
+
+```python
+{
+    "microbatches": [{
+        "kwargs": {
+            "x": x,                                # [R, T, F] float32, context rows first
+            "y": y,                                # [R_context, T] float32 context targets
+            "categorical_inds": [[0, 3], []],      # categorical feature indices, one list per table
+            "estimator_ids": [0, 1],               # optional, TabPFN only
+        },
+        "context": {"targets": targets,            # [R_query, T] int64 class indices
+                    "weights": weights},           # [R_query, T] float32
+    }],
+    "processing": {"loss_fn": "weighted_cross_entropy", "config": {"num_classes": 3}},
+}
+```
+
+- `T` is the number of tables in the call, usually one per ensemble estimator.
+  Calls in one request may have different `R`, `T`, and `F`.
+- `weighted_cross_entropy` trains `-sum(w * log p(target))` over the first
+  `num_classes` outputs of every call. The server sums and the client sets `w`:
+  `1/N` for every query row of the request is mean cross-entropy, so the result
+  does not depend on how calls are grouped. Classification only.
+- `output_gradient` takes `"context": {"output_grad": g}` per call, `g` shaped
+  like that call's forward outputs, and an empty `processing.config`. It trains
+  `sum(<g, outputs>)`, so a client that computes any loss `L` on a forward
+  pass's outputs and sends `g = dL/doutputs` trains on `L`. The weights must not
+  change between that forward pass and this request.
+
+Results carry `metrics["tabular_model_calls"]`, and for
+`weighted_cross_entropy` also `tabular_query_count`, `tabular_accuracy`, and
+`weighted_cross_entropy_objective_sum` (the trained objective, also
+`avg_loss`).
+
+A `forward` operation with `sub_job_type: "training"` and the same
+`microbatches` without `context` (and no `processing`) returns `outputs`, a list
+with one `[R_query, T, n_outputs]` float32 tensor per call.
+
+Malformed shapes, targets outside `[0, num_classes)`, non-finite values, unknown
+keys, and a loss the model cannot take are rejected before any GPU work.
 
 ---
 

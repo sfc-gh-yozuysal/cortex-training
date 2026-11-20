@@ -307,6 +307,7 @@ EXAMPLE_ENTRYPOINTS = [
     "recipes.sft_quickstart.conversational.train",
     "recipes.sft_quickstart.dare.evaluate",
     "recipes.sft_quickstart.dare.train",
+    "recipes.tabular_quickstart.kumo_finetune.train",
 ]
 
 
@@ -333,6 +334,9 @@ def test_example_config_is_optional_and_takes_a_connection(module_name):
     pytest.importorskip("chz")
     if module_name == "recipes.sft_quickstart.dare.evaluate":
         pytest.importorskip("sklearn")
+    if module_name == "recipes.tabular_quickstart.kumo_finetune.train":
+        pytest.importorskip("sklearn")
+        pytest.importorskip("sdm")
     module = importlib.import_module(module_name)
     parameters = inspect.signature(module.Config).parameters
 

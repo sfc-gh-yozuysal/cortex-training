@@ -26,7 +26,7 @@ from tabpfn.finetuning.data_util import meta_dataset_collator
 from tabpfn.finetuning.finetuned_base import _ratio_ctx_query_split
 from tabpfn.preprocessing.datamodel import FeatureModality
 
-from cortex_training import wire
+from cortex_training.client import tabular
 
 
 @dataclass
@@ -153,55 +153,42 @@ def ensemble_probabilities(outputs: list[torch.Tensor], episode: Episode) -> tor
     return torch.stack(probs).mean(0)
 
 
-def _call_kwargs(call: ModelCall) -> dict[str, Any]:
-    kwargs = {"x": call.x, "y": call.y, "categorical_inds": call.categorical_inds}
-    if None not in call.estimator_ids:
-        kwargs["estimator_ids"] = call.estimator_ids
-    return kwargs
+def _call(call: ModelCall) -> tabular.Call:
+    estimator_ids = None if None in call.estimator_ids else call.estimator_ids
+    return tabular.Call(x=call.x, y=call.y, categorical_inds=call.categorical_inds, estimator_ids=estimator_ids)
 
 
 def forward_backward_frame(episode: Episode) -> bytes:
-    """One round trip: the server applies cross-entropy on the query rows."""
-    return wire.dumps(
-        {
-            "microbatches": [
-                {"kwargs": _call_kwargs(call), "context": {"targets": call.targets}}
-                for call in episode.calls
-            ],
-            "processing": {"loss_fn": "cross_entropy", "config": {"num_classes": episode.num_classes}},
-        }
+    """One round trip: the server trains mean cross-entropy on the query rows (``weighted_cross_entropy``, w = 1/N)."""
+    return tabular.build_forward_backward_payload(
+        [_call(call) for call in episode.calls],
+        [call.targets for call in episode.calls],
+        num_classes=episode.num_classes,
     )
 
 
 def forward_frame(episode: Episode) -> bytes:
     """No-gradient pass that returns each call's raw outputs."""
-    return wire.dumps({"microbatches": [{"kwargs": _call_kwargs(call)} for call in episode.calls]})
+    return tabular.build_forward_payload([_call(call) for call in episode.calls])
 
 
 def output_gradient_frame(episode: Episode, grads: list[torch.Tensor]) -> bytes:
     """Backpropagate a client-computed ``dL/doutputs`` through the network."""
-    return wire.dumps(
-        {
-            "microbatches": [
-                {"kwargs": _call_kwargs(call), "context": {"output_grad": grad.float().contiguous()}}
-                for call, grad in zip(episode.calls, grads, strict=True)
-            ],
-            "processing": {"loss_fn": "output_gradient"},
-        }
-    )
+    return tabular.build_output_gradient_payload([_call(call) for call in episode.calls], grads)
 
 
 def client_cross_entropy(outputs: list[torch.Tensor], episode: Episode) -> tuple[float, list[torch.Tensor]]:
     """Any client-side loss works here; this one reproduces TabPFN's own objective."""
-    leaves = [out.detach().clone().requires_grad_(True) for out in outputs]
     total = sum(call.targets.numel() for call in episode.calls)
-    loss = sum(
-        torch.nn.functional.cross_entropy(
-            leaf[..., : episode.num_classes].reshape(-1, episode.num_classes),
-            call.targets.reshape(-1),
-            reduction="sum",
-        )
-        for leaf, call in zip(leaves, episode.calls, strict=True)
-    ) / total
-    loss.backward()
-    return float(loss), [leaf.grad for leaf in leaves]
+
+    def loss(leaves: list[torch.Tensor]) -> torch.Tensor:
+        return sum(
+            torch.nn.functional.cross_entropy(
+                leaf[..., : episode.num_classes].reshape(-1, episode.num_classes),
+                call.targets.reshape(-1),
+                reduction="sum",
+            )
+            for leaf, call in zip(leaves, episode.calls, strict=True)
+        ) / total
+
+    return tabular.output_gradients(outputs, loss)

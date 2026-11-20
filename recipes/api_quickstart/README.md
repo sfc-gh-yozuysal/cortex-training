@@ -13,6 +13,7 @@ from the model catalog instead; see
 | [`sampling.json`](sampling.json) | A sampling sub-job for `Qwen/Qwen3.6-35B-A3B` |
 | [`rl.json`](rl.json) | Colocated training and sampling sub-jobs |
 | [`external-weights-training.json`](external-weights-training.json) | A training sub-job from a Hugging Face model directory on a stage |
+| [`tabular-training.json`](tabular-training.json) | A training sub-job for the tabular foundation model `nvidia/Kumo-Tabular` (`tabular` provider; see [Tabular foundation models](../tabular_quickstart/README.md)) |
 
 [`model-deployment-checkpoint.json`](model-deployment-checkpoint.json) is not a
 create-job body: it is a model-deployment spec for

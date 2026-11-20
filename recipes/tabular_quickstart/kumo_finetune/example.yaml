@@ -1,0 +1,15 @@
+id: kumo-tabular-finetune
+title: Fine-tuning the Kumo Tabular foundation model
+status: experimental
+task: tabular
+methods:
+  - full-parameter
+datasets:
+  - sklearn/digits
+  - sklearn/california_housing
+precision:
+  - float32
+provenance:
+  project: NVIDIA/structured-data-models
+  recipe: examples/tabular/finetune.py
+last_validated: null

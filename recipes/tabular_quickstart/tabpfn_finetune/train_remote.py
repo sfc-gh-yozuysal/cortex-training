@@ -1,11 +1,11 @@
-"""Fine-tune TabPFN v2 on a Cortex Training job (``model_provider: "tabpfn"``).
+"""Fine-tune TabPFN v2 on a Cortex Training job (``model_provider: "tabular"``, adapter ``tabpfn_v2``).
 
 The client builds TabPFN episodes and sends them as ``microbatches`` frames; the
 service runs only the network. Held-out accuracy and log loss are scored with
 ``forward`` before and after training: context rows come from the training
 split and query rows from the test split.
 
-    python -m recipes.tabpfn_finetune.train_remote config=~/ct.json steps=30
+    python -m recipes.tabular_quickstart.tabpfn_finetune.train_remote config=~/ct.json steps=30
 """
 
 from __future__ import annotations
@@ -24,23 +24,24 @@ import torch
 from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
 
-from cortex_training import wire
-from recipes.tabpfn_finetune import episodes as ep
+from cortex_training.client import tabular
+from recipes.tabular_quickstart.tabpfn_finetune import episodes as ep
 from recipes.utils import make_client, running_job
 
 logger = logging.getLogger("tabpfn_finetune")
 
-# The service admits a job only for a model in its catalog; the tabpfn provider ignores this name's weights.
-ADMISSION_MODEL = "Qwen/Qwen3-0.6B"
+# The TabPFN v2 classifier; the tabpfn_v2 adapter loads its weights through the tabpfn library.
+MODEL_NAME = "Prior-Labs/TabPFN-v2-clf"
 
 
-def job_body(*, lr: float, image_tag: str | None) -> dict[str, Any]:
+def job_body(*, lr: float, image_tag: str | None, model_name: str = MODEL_NAME) -> dict[str, Any]:
     body: dict[str, Any] = {
         "sub_job_configs": [{
             "job_type": "training",
-            "model_name": ADMISSION_MODEL,
+            "model_name": model_name,
             "training_config": {
-                "model_provider": "tabpfn",
+                "model_provider": "tabular",
+                "tabular": {"adapter": "tabpfn_v2", "task": "classification"},
                 "n_gpus": 1,
                 "max_seq_len": 1,
                 "train_batch_size": 1,
@@ -73,15 +74,7 @@ def eval_episode(pre, X_ctx, y_ctx, X_te, y_te) -> ep.Episode:
 
 def remote_outputs(client, job_id: str, episode: ep.Episode) -> list[torch.Tensor]:
     body = client.forward(job_id, ep.forward_frame(episode), sub_job_type="training")
-    result = client.poll_request(job_id, body["request_id"])
-    outputs = result.get("outputs")
-    if outputs is None and "payload_b64" in result:
-        import base64
-
-        outputs = wire.loads(base64.b64decode(result["payload_b64"]))["outputs"]
-    if outputs is None:
-        raise RuntimeError(f"forward returned no outputs; keys {sorted(result)}")
-    return [torch.as_tensor(o) for o in outputs]
+    return tabular.outputs_from_forward_result(client.poll_request(job_id, body["request_id"]))
 
 
 def score(client, job_id: str, episode: ep.Episode) -> dict[str, float]:
@@ -95,7 +88,7 @@ def main(argv: list[str]) -> None:
     args = dict(arg.split("=", 1) for arg in argv)
     steps = int(args.get("steps", 30))
     lr = float(args.get("lr", 3e-5))
-    mode = args.get("mode", "cross_entropy")
+    mode = args.get("mode", "weighted_cross_entropy")
     n_estimators = int(args.get("n_estimators", 2))
     episode_rows = int(args.get("episode_rows", 400))
     if args.get("image_tag"):
@@ -113,13 +106,14 @@ def main(argv: list[str]) -> None:
         poll_timeout=float(args.get("poll_timeout", 3600)),
     )
     keep = args.get("keep_job", "false").lower() == "true"
-    with running_job(client, job_body(lr=lr, image_tag=args.get("image_tag")), args.get("job_id"), keep) as job_id:
+    body = job_body(lr=lr, image_tag=args.get("image_tag"), model_name=args.get("model_name", MODEL_NAME))
+    with running_job(client, body, args.get("job_id"), keep) as job_id:
         before = score(client, job_id, held_out)
         logger.info("before: held-out %s", before)
         done, epoch, started = 0, 0, time.time()
         while done < steps:
             for episode in ep.episodes(pre, X_tr, y_tr, episode_rows=episode_rows, query_ratio=0.3, seed=epoch):
-                if mode == "cross_entropy":
+                if mode == "weighted_cross_entropy":
                     frame = ep.forward_backward_frame(episode)
                 else:
                     loss, grads = ep.client_cross_entropy(remote_outputs(client, job_id, episode), episode)
@@ -130,8 +124,8 @@ def main(argv: list[str]) -> None:
                 metrics = result.get("metrics") or {}
                 logger.info(
                     "step %d loss %.4f %s grad_norm %s (%.0fs)", done,
-                    result.get("avg_loss") if mode == "cross_entropy" else loss,
-                    f"query acc {metrics['tabpfn_accuracy']:.3f}" if "tabpfn_accuracy" in metrics else "",
+                    result.get("avg_loss") if mode == "weighted_cross_entropy" else loss,
+                    f"query acc {metrics['tabular_accuracy']:.3f}" if "tabular_accuracy" in metrics else "",
                     stepped.get("grad_norm"), time.time() - started,
                 )
                 if done >= steps:
