@@ -16,6 +16,9 @@ import sys
 import time
 from typing import Any
 
+# TabPFN reads this at import. Preprocessing runs on the client CPU; only the network runs on the GPU.
+os.environ.setdefault("TABPFN_ALLOW_CPU_LARGE_DATASET", "1")
+
 import numpy as np
 import torch
 from sklearn.datasets import load_digits
@@ -95,7 +98,6 @@ def main(argv: list[str]) -> None:
     mode = args.get("mode", "cross_entropy")
     n_estimators = int(args.get("n_estimators", 2))
     episode_rows = int(args.get("episode_rows", 400))
-    os.environ.setdefault("TABPFN_ALLOW_CPU_LARGE_DATASET", "1")
     if args.get("image_tag"):
         os.environ["CORTEX_TRAINING_ENABLE_DEBUG_OPTIONS"] = "1"
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -106,7 +108,10 @@ def main(argv: list[str]) -> None:
     pre = ep.make_preprocessor(n_estimators)
     held_out = eval_episode(pre, X_tr[:600], y_tr[:600], X_te, y_te)
 
-    client = make_client(config=args.get("config"), connection=args.get("connection"))
+    client = make_client(
+        config=args.get("config"), connection=args.get("connection"),
+        poll_timeout=float(args.get("poll_timeout", 3600)),
+    )
     keep = args.get("keep_job", "false").lower() == "true"
     with running_job(client, job_body(lr=lr, image_tag=args.get("image_tag")), args.get("job_id"), keep) as job_id:
         before = score(client, job_id, held_out)
