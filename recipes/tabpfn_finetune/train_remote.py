@@ -5,7 +5,7 @@ service runs only the network. Held-out accuracy and log loss are scored with
 ``forward`` before and after training: context rows come from the training
 split and query rows from the test split.
 
-    python -m recipes.tabpfn_finetune.train_remote config=~/ct.json image_tag=dev_... steps=30
+    python -m recipes.tabpfn_finetune.train_remote config=~/ct.json steps=30
 """
 
 from __future__ import annotations
