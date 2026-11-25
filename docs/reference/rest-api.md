@@ -1532,9 +1532,10 @@ has `type` `unsupported_prompt_shape`, and its `msg` says what was refused
 (the chunk, the setting, or the limit) without quoting the media bytes. The
 server checks in this order and answers the first that fails: chunk types and
 fields, the media setting, the job's modalities, the count and byte limits
-(413), then each media chunk's content (400, or 413 for image size). A request
-sent in several chunks is also checked as its chunks arrive: past the per-request
-media bytes plus frame overhead it answers 413 then, text-only requests included.
+(413), then each media chunk's content (400, or 413 for image or video size).
+With media on, a request sent in several chunks is also checked as its chunks
+arrive: past the per-request media bytes plus frame overhead it answers 413
+then, text-only requests included.
 
 - 400 `unsupported_prompt_shape`:
   - `image_asset_pointer`, `video_asset_pointer`, or `dmel` chunks, whatever
@@ -1559,7 +1560,10 @@ media bytes plus frame overhead it answers 413 then, text-only requests included
     whose markers before the scan run past 4096 bytes of fill, marker codes and
     length fields. An image cut off after its header passes this check; if the
     inference worker cannot decode it, the request fails with `error_type`
-    `invalid_argument`.
+    `invalid_argument`;
+  - a video whose MP4 `moov` box (read wherever it sits in the file, without
+    decoding) cannot be walked, or states no video track, a zero frame size or
+    no duration.
 - 413 `unsupported_prompt_shape`, naming the limit (defaults in parentheses):
   - image and video chunks in one prompt (64);
   - video chunks in one prompt (1);
@@ -1570,7 +1574,11 @@ media bytes plus frame overhead it answers 413 then, text-only requests included
     overhead is refused before it is reassembled;
   - width or height of one image (8000), read from its header without
     decoding;
-  - width x height of one image (25000000).
+  - width x height of one image (25000000);
+  - frame width or height of one video (4096), the largest any video track
+    states in its MP4 `tkhd` box or `stsd` sample entry;
+  - frame width x height of one video (8847360, 4096 x 2160);
+  - duration of one video, from the MP4 `mvhd` box (600 seconds).
 
 A media chunk that passes these checks but that the inference worker cannot
 decode fails the request with error type `invalid_argument`.
@@ -1582,8 +1590,10 @@ servers named only the string and token-list shapes.
 
 Not supported yet: asset pointers, `dmel` audio, `expected_tokens`, video
 `fps`, chunked prompts on `/generate-stream`, and more than one video per
-prompt by default. Video duration and frame count are not checked; only the
-byte limits bound them.
+prompt by default. A video's frame size and duration are checked from its MP4
+header only; the codec's own parameters (the H.264 SPS) are not read. How many
+frames are sampled from a video is set by the sampling job's engine
+configuration, not by the request.
 
 Typical polled result:
 
