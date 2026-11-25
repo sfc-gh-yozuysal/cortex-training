@@ -1563,7 +1563,12 @@ then, text-only requests included.
     `invalid_argument`;
   - a video whose MP4 `moov` box (read wherever it sits in the file, without
     decoding) cannot be walked, or states no video track, a zero frame size or
-    no duration.
+    no duration. A fragmented MP4 whose `mvhd` states no duration and that has
+    no `mvex/mehd` box (common in fragmented ffmpeg output) states no duration:
+    the duration limit cannot be checked, so it is refused, and the message
+    says to remux it to a non-fragmented MP4 (for example
+    `ffmpeg -i in.mp4 -c copy -movflags +faststart out.mp4`) or give it an
+    `mehd` box.
 - 413 `unsupported_prompt_shape`, naming the limit (defaults in parentheses):
   - image and video chunks in one prompt (64);
   - video chunks in one prompt (1);
