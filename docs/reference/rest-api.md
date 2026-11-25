@@ -1532,7 +1532,9 @@ has `type` `unsupported_prompt_shape`, and its `msg` says what was refused
 (the chunk, the setting, or the limit) without quoting the media bytes. The
 server checks in this order and answers the first that fails: chunk types and
 fields, the media setting, the job's modalities, the count and byte limits
-(413), then each media chunk's content (400, or 413 for image size):
+(413), then each media chunk's content (400, or 413 for image size). A request
+sent in several chunks is also checked as its chunks arrive: past the per-request
+media bytes plus frame overhead it answers 413 then, text-only requests included.
 
 - 400 `unsupported_prompt_shape`:
   - `image_asset_pointer`, `video_asset_pointer`, or `dmel` chunks, whatever
@@ -1552,8 +1554,12 @@ fields, the media setting, the job's modalities, the count and byte limits
     `hvc1`/`hev1`, AV1 `av01`, DASH, 3GPP, QuickTime `qt  `) is refused here
     rather than queued and refused by the worker;
   - an image whose PNG `IHDR` or JPEG `SOFn` header states no readable width
-    and height (truncated, zero size, or a JPEG whose markers before its frame
-    header run past 4096 bytes of fill, marker codes and length fields).
+    and height: truncated before it, a zero size, a JPEG with no frame header or
+    more than one before its scan, or with a reserved `JPG`/`JPGn` marker, or
+    whose markers before the scan run past 4096 bytes of fill, marker codes and
+    length fields. An image cut off after its header passes this check; if the
+    inference worker cannot decode it, the request fails with `error_type`
+    `invalid_argument`.
 - 413 `unsupported_prompt_shape`, naming the limit (defaults in parentheses):
   - image and video chunks in one prompt (64);
   - video chunks in one prompt (1);
