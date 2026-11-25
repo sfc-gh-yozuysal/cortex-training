@@ -3375,16 +3375,35 @@ the training job applies the same checks when it decodes the batch, and the
 request fails with error type `invalid_argument` instead of an HTTP error.
 
 A batch that passes those checks must also carry `mm_token_type_ids`, which
-places each image and video token in its row, and 2-D `input_ids`. Under
-sequence parallelism the job cuts each packed call into `sp_size` equal
+places each image and video token in its row, and 2-D `input_ids`, and its
+media leaves must agree with each other and with the batch's rows:
+
+- A kind's three leaves travel together: `pixel_values`, `image_grid_thw` and
+  `image_row_ids` for images, `pixel_values_videos`, `video_grid_thw` and
+  `video_row_ids` for videos. Sending one or two of them is refused, the row
+  ids included, also for a one-row batch.
+- The grid is `[items, 3]` (`t`, `h`, `w` per item), and the row ids hold one
+  row index per item, each in `[0, rows)` of the batch's `input_ids`, and
+  non-decreasing (items in row order).
+- The values have exactly as many rows (patches) as the grid describes: the
+  sum over items of `t * h * w`.
+- Media leaves sit at the top level of the batch or of its `kwargs`; a media
+  leaf inside `context` (or any other nested dict) is refused.
+
+These are checked by the training job when it dispatches the batch, not by the
+HTTP layer: a batch that breaks one is accepted, and the request then fails
+with error type `invalid_argument`, naming the leaf, the shapes or the row ids
+(never the pixels).
+
+Under sequence parallelism the job cuts each packed call into `sp_size` equal
 windows, and the windows are not media-aware: an image or video whose tokens
 straddle a window boundary fails the request with error type
-`invalid_argument`, naming the item's kind, index, token span and the
-boundary (never its pixels). Where the boundaries fall follows from the row
-lengths and `max_tokens_per_mb` (`training_config.mb_spec.max_tokens_per_mb`,
-section 8), which together decide which rows pack into a call. To fix it,
-lower `sp_size` (`sp_size` 1 never splits), or change `max_tokens_per_mb` or
-the rows' lengths so each item's tokens sit inside one window.
+`invalid_argument`, naming the item's kind, index, token span and the boundary
+(never its pixels). Where the boundaries fall follows from the row lengths and
+`max_tokens_per_mb` (`training_config.mb_spec.max_tokens_per_mb`, section 8),
+which together decide which rows pack into a call. To fix it, lower `sp_size`
+(`sp_size` 1 never splits), or change `max_tokens_per_mb` or the rows' lengths
+so each item's tokens sit inside one window.
 
 ---
 
